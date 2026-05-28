@@ -1,5 +1,5 @@
 project( AmMatrix )
-cmake_minimum_required( VERSION 2.8.7 )
+cmake_minimum_required( VERSION 3.18 )
  
 #Make fast, lean and platform independent binaries..
 set(CMAKE_CXX_FLAGS "-s -O3 -fPIC -march=native -mtune=native")
@@ -30,7 +30,10 @@ add_library(
             simpleRenderer.c
             solids.c
            )
-target_link_libraries(AmMatrix m rt )
+target_link_libraries(AmMatrix m)
+if(NOT APPLE)
+  target_link_libraries(AmMatrix rt)
+endif()
 
 add_subdirectory(TestCPUOptimizedInstructionSet/) 
 

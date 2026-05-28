@@ -1,12 +1,15 @@
 project( TestCPUOptimizedInstructionSet ) 
-cmake_minimum_required( VERSION 2.8.7 )
+cmake_minimum_required( VERSION 3.18 )
 
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
  
 add_executable(TestCPUOptimizedInstructionSet main.c ../matrix4x4Tools.c )  
-target_link_libraries(TestCPUOptimizedInstructionSet rt dl m AmMatrix )
+target_link_libraries(TestCPUOptimizedInstructionSet dl m AmMatrix )
+if(NOT APPLE)
+    target_link_libraries(TestCPUOptimizedInstructionSet rt)
+endif()
 set_target_properties(TestCPUOptimizedInstructionSet PROPERTIES DEBUG_POSTFIX "D")
 add_dependencies(TestCPUOptimizedInstructionSet AmMatrix) 
 

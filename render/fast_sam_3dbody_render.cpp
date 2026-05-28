@@ -16,8 +16,11 @@
 
 // GLEW must come before any other GL header.
 #include <GL/glew.h>
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#else
 #include <GL/gl.h>
-#include <GL/glx.h>
+#endif
 
 extern "C" {
 #include "../GraphicsEngine/System/glx3.h"
