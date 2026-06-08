@@ -1,29 +1,36 @@
 #include "coreml_decoder.h"
 #include <cstdio>
 
-extern "C" {
+namespace fsb {
 
-CoreMLDecoderContext init_coreml_decoder(const char* mlpackage_path) {
-    (void)mlpackage_path;
+struct CoreMLDecoder::Impl {
+    bool loaded = false;
+};
+
+CoreMLDecoder::CoreMLDecoder() : impl_(new Impl()) {}
+CoreMLDecoder::~CoreMLDecoder() = default;
+
+bool CoreMLDecoder::load(const std::string& mlpackage_path, ComputeUnit compute_units)
+{
+    (void)mlpackage_path; (void)compute_units;
     std::fprintf(stderr, "[FSB] CoreML Decoder is only available on macOS builds.\n");
-    return nullptr;
-}
-
-bool run_coreml_decoder(CoreMLDecoderContext ctx,
-                        int batch,
-                        const float* features,
-                        const float* cond_info,
-                        const float* ray_cond,
-                        float* pose_token,
-                        int pose_token_dim,
-                        void* opaque_in) {
-    (void)ctx; (void)batch; (void)features; (void)cond_info; (void)ray_cond;
-    (void)pose_token; (void)pose_token_dim; (void)opaque_in;
     return false;
 }
 
-void free_coreml_decoder(CoreMLDecoderContext ctx) {
-    (void)ctx;
+bool CoreMLDecoder::run(int batch,
+                        const float* features,
+                        const float* condition_info,
+                        const float* ray_cond,
+                        float* pose_token_out,
+                        int pose_token_dim,
+                        std::shared_ptr<void> opaque_in)
+{
+    (void)batch; (void)features; (void)condition_info; (void)ray_cond;
+    (void)pose_token_out; (void)pose_token_dim; (void)opaque_in;
+    return false;
 }
 
-}
+void CoreMLDecoder::free() { impl_->loaded = false; }
+bool CoreMLDecoder::loaded() const { return impl_->loaded; }
+
+} // namespace fsb

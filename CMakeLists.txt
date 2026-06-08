@@ -10,7 +10,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Options
 # ---------------------------------------------------------------------------
-option(FSB_BACKBONE_SIZE "Size of the backbone image input (e.g. 512 or 1024)" 512)
+set(FSB_BACKBONE_SIZE "512" CACHE STRING "Size of the backbone image input (e.g. 512 or 1024)")
 
 # Platform helpers
 # ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ if(FSB_COREML AND APPLE)
     target_link_libraries(fast_sam_3dbody PUBLIC "-framework Foundation" "-framework CoreML")
     set_source_files_properties(src/coreml_backbone.mm src/coreml_yolo.mm src/coreml_decoder.mm src/coreml_utils.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-    target_link_libraries(fast_sam_3dbody PUBLIC rt)
+    target_link_libraries(fast_sam_3dbody PUBLIC $<$<NOT:$<BOOL:${APPLE}>>:rt>)
 endif()
 
 # TensorRT EP: only meaningful for CUDA builds (it dlopens the NVIDIA TRT runtime
@@ -399,8 +399,7 @@ if(NOT WIN32)
         OpenGL::GL
         GLEW::GLEW
         ${OpenCV_LIBS}
-        $<$<BOOL:${APPLE}>:${X11_LIBRARIES}>
-        $<$<NOT:$<BOOL:${APPLE}>>:X11>
+        X11
         $<$<NOT:$<BOOL:${APPLE}>>:rt>
         m
         AmMatrix
@@ -409,6 +408,7 @@ if(NOT WIN32)
     if(APPLE)
         # macOS: Prioritize XQuartz headers over Conda's tk dummy headers
         target_include_directories(fast_sam_3dbody_render BEFORE PRIVATE /opt/X11/include /opt/homebrew/include)
+        target_link_directories(fast_sam_3dbody_render PRIVATE /opt/X11/lib /opt/homebrew/lib)
         # Force linking to XQuartz libGL instead of macOS system OpenGL.framework
         target_link_libraries(fast_sam_3dbody_render PRIVATE /opt/X11/lib/libGL.dylib)
     endif()

@@ -1,21 +1,29 @@
 #include "coreml_yolo.h"
 #include <cstdio>
 
-extern "C" {
+namespace fsb {
 
-CoreMLYoloContext init_coreml_yolo(const char* mlpackage_path) {
-    (void)mlpackage_path;
+struct CoreMLYolo::Impl {
+    bool loaded = false;
+};
+
+CoreMLYolo::CoreMLYolo() : impl_(new Impl()) {}
+CoreMLYolo::~CoreMLYolo() = default;
+
+bool CoreMLYolo::load(const std::string& mlpackage_path, ComputeUnit compute_units)
+{
+    (void)mlpackage_path; (void)compute_units;
     std::fprintf(stderr, "[FSB] CoreML YOLO is only available on macOS builds.\n");
-    return nullptr;
-}
-
-bool run_coreml_yolo(CoreMLYoloContext ctx, const float* input_nchw, float* output_nchw) {
-    (void)ctx; (void)input_nchw; (void)output_nchw;
     return false;
 }
 
-void free_coreml_yolo(CoreMLYoloContext ctx) {
-    (void)ctx;
+bool CoreMLYolo::run(const float* input_bchw, float* output)
+{
+    (void)input_bchw; (void)output;
+    return false;
 }
 
-}
+void CoreMLYolo::free() { impl_->loaded = false; }
+bool CoreMLYolo::loaded() const { return impl_->loaded; }
+
+} // namespace fsb

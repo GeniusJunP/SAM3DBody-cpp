@@ -657,42 +657,12 @@ struct Pipeline::Impl
         std::vector<PersonDet> dets;
 
 #ifdef __APPLE__
-        if (coreml_yolo.loaded()) {
-            const int YW = 640, YH = 640;
-            float scale = std::min(float(YW) / float(W), float(YH) / float(H));
-            int new_w = (int)std::round(W * scale);
-            int new_h = (int)std::round(H * scale);
-            int pad_x = (YW - new_w) / 2;
-            int pad_y = (YH - new_h) / 2;
-            cv::Mat resized;
-            cv::resize(bgr, resized, {new_w, new_h}, 0, 0, cv::INTER_LINEAR);
-            cv::Mat yolo_in(YH, YW, CV_8UC3, cv::Scalar(114, 114, 114));
-            resized.copyTo(yolo_in(cv::Rect(pad_x, pad_y, new_w, new_h)));
-            cv::Mat yolo_blob = cv::dnn::blobFromImage(yolo_in, 1.0/255.0, cv::Size(), cv::Scalar(), true, false);
-            
-            int nd = 8400;
-            std::vector<float> row_major(nd * 56);
-            if (!coreml_yolo.run(yolo_blob.ptr<float>(), row_major.data())) {
-                fprintf(stderr, "[FSB] CoreML YOLO inference failed\n");
-            } else {
-                dets = parse_yolo_output(row_major.data(), nd, cfg.person_thresh, cfg.person_nms_iou);
-                for (auto& d : dets) {
-                    d.x1 = (d.x1 - pad_x) / scale;
-                    d.x2 = (d.x2 - pad_x) / scale;
-                    d.y1 = (d.y1 - pad_y) / scale;
-                    d.y2 = (d.y2 - pad_y) / scale;
-                    if (d.has_kps) {
-                        for (int k = 0; k < 17; ++k) {
-                            d.kps[k*3+0] = (d.kps[k*3+0] - pad_x) / scale;
-                            d.kps[k*3+1] = (d.kps[k*3+1] - pad_y) / scale;
-                        }
-                    }
-                }
-            }
-        } else {
+        bool use_coreml_yolo = coreml_yolo.loaded();
+#else
+        bool use_coreml_yolo = false;
 #endif
 
-        if (sess_yolo.session)
+        if (use_coreml_yolo || sess_yolo.session)
         {
             // YOLO11 input: 640×640.
             // We must match Ultralytics YOLO's default preprocessing (LetterBox):
@@ -721,49 +691,71 @@ struct Pipeline::Impl
                     yolo_buf[2*YH*YW + y*YW + x] = row[3*x+0] / 255.f; // B
                 }
             }
-            // Run YOLO – output shape: [1, num_dets, 56] (or [1, 56, num_dets] depending on export)
-            Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-            std::vector<int64_t> in_shape{1, 3, YH, YW};
-            Ort::Value in_t = Ort::Value::CreateTensor<float>(
-                                  mi, yolo_buf.data(), yolo_buf.size(), in_shape.data(), 4);
 
-            try
+            int nd = 0, C = 0;
+            std::vector<float> row_major;
+
+#ifdef __APPLE__
+            if (use_coreml_yolo) {
+                nd = 8400;
+                C = (cfg.detector == PipelineConfig::DET_LIBREYOLO) ? 84 : 56;
+                row_major.resize(nd * std::max(56, C));
+                if (!coreml_yolo.run(yolo_buf.data(), row_major.data())) {
+                    fprintf(stderr, "[FSB] CoreML YOLO inference failed\n");
+                    row_major.clear();
+                }
+            } else
+#endif
             {
-                auto outs = sess_yolo.session->Run(
-                                Ort::RunOptions{nullptr},
-                                sess_yolo.input_names.data(),  &in_t,  1,
-                                sess_yolo.output_names.data(), 1);
+                // Run YOLO – output shape: [1, num_dets, 56] (or [1, 56, num_dets] depending on export)
+                Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+                std::vector<int64_t> in_shape{1, 3, YH, YW};
+                Ort::Value in_t = Ort::Value::CreateTensor<float>(
+                                      mi, yolo_buf.data(), yolo_buf.size(), in_shape.data(), 4);
 
-                auto info   = outs[0].GetTensorTypeAndShapeInfo();
-                auto shape  = info.GetShape();
-                // Output is [1, C, N] (channels-first → needs transpose) or
-                // [1, N, C]. C is the per-detection feature count (56 for
-                // YOLO11-pose, 84 for YOLOv9 detection); N is the anchor count
-                // and is always the larger dim. Detect the layout by size so the
-                // same code feeds either parser.
-                int nd = 0, C = 0;
-                const float* raw = outs[0].GetTensorData<float>();
-                std::vector<float> row_major;
-
-                if (shape.size() == 3)
+                try
                 {
-                    int d1 = (int)shape[1], d2 = (int)shape[2];
-                    if (d1 <= d2)
+                    auto outs = sess_yolo.session->Run(
+                                    Ort::RunOptions{nullptr},
+                                    sess_yolo.input_names.data(),  &in_t,  1,
+                                    sess_yolo.output_names.data(), 1);
+
+                    auto info   = outs[0].GetTensorTypeAndShapeInfo();
+                    auto shape  = info.GetShape();
+                    // Output is [1, C, N] (channels-first → needs transpose) or
+                    // [1, N, C]. C is the per-detection feature count (56 for
+                    // YOLO11-pose, 84 for YOLOv9 detection); N is the anchor count
+                    // and is always the larger dim. Detect the layout by size so the
+                    // same code feeds either parser.
+                    const float* raw = outs[0].GetTensorData<float>();
+
+                    if (shape.size() == 3)
                     {
-                        // [1, C, N] → transpose to row-major [N, C]
-                        C = d1; nd = d2;
-                        row_major.resize((size_t)nd * C);
-                        for (int j = 0; j < nd; ++j)
-                            for (int k = 0; k < C; ++k)
-                                row_major[(size_t)j*C + k] = raw[(size_t)k*nd + j];
-                    }
-                    else
-                    {
-                        // [1, N, C] → already row-major
-                        C = d2; nd = d1;
-                        row_major.assign(raw, raw + (size_t)nd * C);
+                        int d1 = (int)shape[1], d2 = (int)shape[2];
+                        if (d1 <= d2)
+                        {
+                            // [1, C, N] → transpose to row-major [N, C]
+                            C = d1; nd = d2;
+                            row_major.resize((size_t)nd * C);
+                            for (int j = 0; j < nd; ++j)
+                                for (int k = 0; k < C; ++k)
+                                    row_major[(size_t)j*C + k] = raw[(size_t)k*nd + j];
+                        }
+                        else
+                        {
+                            // [1, N, C] → already row-major
+                            C = d2; nd = d1;
+                            row_major.assign(raw, raw + (size_t)nd * C);
+                        }
                     }
                 }
+                catch (const Ort::Exception& e)
+                {
+                    fprintf(stderr, "[FSB] YOLO inference error: %s\n", e.what());
+                }
+            }
+
+            if (!row_major.empty()) {
                 // Parse per the selected provider. The letterbox reversal below
                 // (YOLO coords → original image coords) is shared by both.
                 switch (cfg.detector)
@@ -794,14 +786,7 @@ struct Pipeline::Impl
                     }
                 }
             }
-            catch (const Ort::Exception& e)
-            {
-                fprintf(stderr, "[FSB] YOLO inference error: %s\n", e.what());
-            }
         }
-#ifdef __APPLE__
-        }
-#endif
 
         // Fallback: full image as single detection
         if (dets.empty())
@@ -861,26 +846,24 @@ struct Pipeline::Impl
         std::vector<float> features(feat_elems);
         std::shared_ptr<void> coreml_features = nullptr;
 #ifdef __APPLE__
-        if (coreml_backbone.loaded()) {
+        bool use_coreml_backbone = coreml_backbone.loaded();
+        if (use_coreml_backbone) {
             std::shared_ptr<void>* retained_features = coreml_decoder.loaded() ? &coreml_features : nullptr;
             if (!coreml_backbone.run(batch_crops.data(), B, features.data(), retained_features)) return {};
-        } else {
+        } else
 #endif
-
         {
-        std::vector<int64_t> img_shape{B, 3, CROP_SIZE, CROP_SIZE};
+            std::vector<int64_t> img_shape{B, 3, CROP_SIZE, CROP_SIZE};
 
-        Ort::Value img_t = Ort::Value::CreateTensor<float>(
-                               mi, batch_crops.data(), batch_crops.size(), img_shape.data(), 4);
-        auto backbone_out = sess_backbone.session->Run(
-                                Ort::RunOptions{nullptr},
-                                sess_backbone.input_names.data(),  &img_t,  1,
-                                sess_backbone.output_names.data(), 1);
-        std::copy(feat_ptr, feat_ptr + feat_elems, features.begin());
+            Ort::Value img_t = Ort::Value::CreateTensor<float>(
+                                   mi, batch_crops.data(), batch_crops.size(), img_shape.data(), 4);
+            auto backbone_out = sess_backbone.session->Run(
+                                    Ort::RunOptions{nullptr},
+                                    sess_backbone.input_names.data(),  &img_t,  1,
+                                    sess_backbone.output_names.data(), 1);
+            const float* feat_ptr = backbone_out[0].GetTensorData<float>();
+            std::copy(feat_ptr, feat_ptr + feat_elems, features.begin());
         }
-#ifdef __APPLE__
-        }
-#endif
         double dt_bb = ms(t0);
         timers.backbone += dt_bb;
         printf("[FSB] backbone:   %.1f ms\n", dt_bb);
@@ -896,7 +879,8 @@ struct Pipeline::Impl
 
         std::vector<float> pose_tokens(token_elems);
 #ifdef __APPLE__
-        if (coreml_decoder.loaded()) {
+        bool use_coreml_decoder = coreml_decoder.loaded();
+        if (use_coreml_decoder) {
             if (!coreml_decoder.run(B,
                                     features.data(),
                                     batch_cond.data(),
@@ -907,34 +891,31 @@ struct Pipeline::Impl
                 fprintf(stderr, "[FSB] CoreML Decoder inference failed for batch\n");
                 return {};
             }
-        } else {
+        } else
 #endif
-
         {
-        Ort::Value feat_t = Ort::Value::CreateTensor<float>(
-                                mi, features.data(), features.size(), feat_shape.data(), 4);
-        Ort::Value cond_t = Ort::Value::CreateTensor<float>(
-                                mi, batch_cond.data(), batch_cond.size(), cond_shape.data(), 2);
-        Ort::Value ray_t  = Ort::Value::CreateTensor<float>(
-                                mi, batch_ray.data(), batch_ray.size(), ray_shape.data(), 4);
+            Ort::Value feat_t = Ort::Value::CreateTensor<float>(
+                                    mi, features.data(), features.size(), feat_shape.data(), 4);
+            Ort::Value cond_t = Ort::Value::CreateTensor<float>(
+                                    mi, batch_cond.data(), batch_cond.size(), cond_shape.data(), 2);
+            Ort::Value ray_t  = Ort::Value::CreateTensor<float>(
+                                    mi, batch_ray.data(), batch_ray.size(), ray_shape.data(), 4);
 
-        std::vector<Ort::Value> dec_inputs;
-        dec_inputs.push_back(std::move(feat_t));
-        dec_inputs.push_back(std::move(cond_t));
-        dec_inputs.push_back(std::move(ray_t));
+            std::vector<Ort::Value> dec_inputs;
+            dec_inputs.push_back(std::move(feat_t));
+            dec_inputs.push_back(std::move(cond_t));
+            dec_inputs.push_back(std::move(ray_t));
 
-        std::vector<const char*>& dec_in_names  = sess_decoder.input_names;
-        std::vector<const char*>& dec_out_names = sess_decoder.output_names;
+            std::vector<const char*>& dec_in_names  = sess_decoder.input_names;
+            std::vector<const char*>& dec_out_names = sess_decoder.output_names;
 
-        auto decoder_out = sess_decoder.session->Run(
-                               Ort::RunOptions{nullptr},
-                               dec_in_names.data(),  dec_inputs.data(),  dec_inputs.size(),
-                               dec_out_names.data(), 1);
-        std::copy(token_ptr, token_ptr + token_elems, pose_tokens.begin());
+            auto decoder_out = sess_decoder.session->Run(
+                                   Ort::RunOptions{nullptr},
+                                   dec_in_names.data(),  dec_inputs.data(),  dec_inputs.size(),
+                                   dec_out_names.data(), 1);
+            const float* token_ptr = decoder_out[0].GetTensorData<float>();
+            std::copy(token_ptr, token_ptr + token_elems, pose_tokens.begin());
         }
-#ifdef __APPLE__
-        }
-#endif
         double dt_dec = ms(t0);
         timers.decoder += dt_dec;
         printf("[FSB] decoder:    %.1f ms\n", dt_dec);

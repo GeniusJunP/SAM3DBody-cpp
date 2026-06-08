@@ -20,6 +20,7 @@
 #include <OpenGL/gl.h>
 #else
 #include <GL/gl.h>
+#include <GL/glx.h>
 #endif
 
 extern "C" {
@@ -674,7 +675,6 @@ int main(int argc, const char** argv) {
     max_frames                     = cc.max_frames;
     start_frame                    = cc.start_frame;
     max_persons                    = cc.max_persons;
-    detector                       = detector_kind_from_string(cc.detector);
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
     fsb::Pipeline pipeline;
