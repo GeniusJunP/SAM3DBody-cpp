@@ -680,15 +680,22 @@ struct Pipeline::Impl
             cv::Mat yolo_in(YH, YW, CV_8UC3, cv::Scalar(114, 114, 114));
             resized.copyTo(yolo_in(cv::Rect(pad_x, pad_y, new_w, new_h)));
             // HWC uint8 → CHW float32 [0,1]
-            std::vector<float> yolo_buf(3 * YH * YW);
-            for (int y = 0; y < YH; ++y)
-            {
-                const uchar* row = yolo_in.ptr<uchar>(y);
-                for (int x = 0; x < YW; ++x)
+            std::vector<float> yolo_buf;
+            cv::Mat yolo_bgra;
+
+            if (use_coreml_yolo) {
+                cv::cvtColor(yolo_in, yolo_bgra, cv::COLOR_BGR2BGRA);
+            } else {
+                yolo_buf.resize(3 * YH * YW);
+                for (int y = 0; y < YH; ++y)
                 {
-                    yolo_buf[0*YH*YW + y*YW + x] = row[3*x+2] / 255.f; // R
-                    yolo_buf[1*YH*YW + y*YW + x] = row[3*x+1] / 255.f; // G
-                    yolo_buf[2*YH*YW + y*YW + x] = row[3*x+0] / 255.f; // B
+                    const uchar* row = yolo_in.ptr<uchar>(y);
+                    for (int x = 0; x < YW; ++x)
+                    {
+                        yolo_buf[0*YH*YW + y*YW + x] = row[3*x+2] / 255.f; // R
+                        yolo_buf[1*YH*YW + y*YW + x] = row[3*x+1] / 255.f; // G
+                        yolo_buf[2*YH*YW + y*YW + x] = row[3*x+0] / 255.f; // B
+                    }
                 }
             }
 
@@ -700,7 +707,7 @@ struct Pipeline::Impl
                 nd = 8400;
                 C = (cfg.detector == PipelineConfig::DET_LIBREYOLO) ? 84 : 56;
                 row_major.resize(nd * std::max(56, C));
-                if (!coreml_yolo.run(yolo_buf.data(), row_major.data())) {
+                if (!coreml_yolo.run_image(yolo_bgra.data, YW, YH, yolo_bgra.step, row_major.data())) {
                     fprintf(stderr, "[FSB] CoreML YOLO inference failed\n");
                     row_major.clear();
                 }

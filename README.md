@@ -86,6 +86,9 @@ Then run with `--backbone backbone_fp32.onnx --cuda -1`:
 > Single-image or low-frequency use cases are feasible. For anything
 > approaching real-time, a CUDA-capable GPU is required.
 >
+> **Performance expectations for Apple Silicon (CoreML):**
+> By offloading YOLO, the DINOv3 backbone, and the decoder to the macOS Neural Engine (ANE) or GPU via CoreML, a full pipeline pass is significantly accelerated to **~600–900 ms** per frame. CoreML YOLO v11m takes roughly **25–40 ms** using a zero-copy CVPixelBuffer backend. This enables 1–2 fps processing on typical M-series Macs without needing CUDA.
+>
 > WSL2 users: if `nvidia-smi` works inside WSL, install the
 > [CUDA toolkit for WSL2](https://developer.nvidia.com/cuda-downloads)
 > (do **not** install the full Linux driver — only the WSL2 toolkit) and use
@@ -909,13 +912,13 @@ fsb_destroy(h);
 
 ## Performance notes
 
-| Stage | Time (RTX 3090, B=1) | Time (Apple Silicon CoreML, B=1) | Time (Apple Silicon CoreML, B=4) |
-|-------|----------------------|----------------------------------|----------------------------------|
-| YOLO detection | ~5 ms | ~1.5 ms | ~17 ms |
-| Backbone (DINOv3-ViT-H) | ~150–200 ms | ~370 ms | ~1333 ms (333 ms / sample) |
-| Decoder (6-layer) | ~20 ms | ~180 ms | ~48 ms |
-| MHR + camera FFN (CPU) | <1 ms | ~2 ms | ~12 ms |
-| Native C LBS (optional) | <1 ms | <1 ms | ~4 ms |
+| Stage | Time (RTX 3090, B=1) | Time (Apple M1 Max 24-core GPU 32GB, B=1) |
+|-------|----------------------|-------------------------------------------|
+| YOLO detection | ~5 ms | ~1.5 ms |
+| Backbone (DINOv3-ViT-H) | ~150–200 ms | ~370 ms |
+| Decoder (6-layer) | ~20 ms | ~180 ms |
+| MHR + camera FFN (CPU) | <1 ms | ~2 ms |
+| Native C LBS (optional) | <1 ms | <1 ms |
 
 - Backbone is the bottleneck; it dominates end-to-end latency.
 - Use `--skip-body` unless 3D vertices are required.
