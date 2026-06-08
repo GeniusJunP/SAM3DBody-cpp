@@ -87,7 +87,7 @@ Then run with `--backbone backbone_fp32.onnx --cuda -1`:
 > approaching real-time, a CUDA-capable GPU is required.
 >
 > **Performance expectations for Apple Silicon (CoreML):**
-> By offloading YOLO, the DINOv3 backbone, and the decoder to the macOS Neural Engine (ANE) or GPU via CoreML, a full pipeline pass is significantly accelerated to **~600–900 ms** per frame. CoreML YOLO v11m takes roughly **25–40 ms** using a zero-copy CVPixelBuffer backend. This enables 1–2 fps processing on typical M-series Macs without needing CUDA.
+> By offloading YOLO, the DINOv3 backbone, and the decoder to the macOS Neural Engine (ANE) or GPU via CoreML, a full pipeline pass is significantly accelerated to **~400–600 ms** per frame (after a first-frame warm-up of ~700 ms). CoreML YOLO v11m takes roughly **15–25 ms**, Backbone takes **~360 ms**, and Decoder takes **~13 ms**. This enables 2+ fps processing on typical M-series Macs without needing CUDA.
 >
 > WSL2 users: if `nvidia-smi` works inside WSL, install the
 > [CUDA toolkit for WSL2](https://developer.nvidia.com/cuda-downloads)

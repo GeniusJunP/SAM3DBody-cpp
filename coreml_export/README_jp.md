@@ -73,3 +73,20 @@ make build
 >   --coreml-decoder coreml_export/checkpoints/decoder_coreml.mlmodelc \
 >   --coreml-yolo coreml_export/checkpoints/yolo11m-pose.mlmodelc
 > ```
+
+## 5. パフォーマンスと既知の制限
+
+### パフォーマンス
+（検証環境: Apple M1 Max, 10コアCPU, 32GB RAM）
+
+初回フレームはANE/GPUのウォームアップにより約 700 ms ほどかかりますが、2フレーム目以降の定常状態では以下のようなレイテンシ（目安）で動作し、**約 400 ms / frame (2.5 fps)** のスループットが期待できます。
+
+| モジュール | CoreML 実測値 (定常状態) | ONNX Runtime (CUDA基準) |
+| :--- | :--- | :--- |
+| **YOLOv11m** | ~20 ms | ~15 ms |
+| **Backbone** | ~360 ms | ~191 ms |
+| **Decoder** | ~13 ms | ~8.6 ms |
+
+### 既知の制限
+- **Decoderのバッチサイズ制約**: AppleのGPU (Metal) コンパイラ (E5RT) が、TransformerのAttentionで用いられるような動的次元を含んだ複雑なテンソル変形 (Reshape) を許可しておらず、コンパイル時に形状を確定できないと安全のためCPU実行にフォールバックして著しく遅延してしまうため、Decoderは **バッチサイズ `B=1`（固定）** としてコンパイルされています。C++推論エンジン側では `MLArrayBatchProvider` を用いて、検出された複数人を1人ずつ並列スケジューリングする形で対応しています。
+- **Backboneの演算速度**: ONNX Runtime (CUDA) と比較して、Backbone の CoreML 実行には時間がかかっています。将来的にモデルグラフの最適化やANEへの完全マッピングが行われれば改善する可能性があります。

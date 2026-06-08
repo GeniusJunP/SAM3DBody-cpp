@@ -76,13 +76,20 @@ make build
 >   --coreml-yolo coreml_export/checkpoints/yolo11m-pose.mlmodelc
 > ```
 
-## 5. Export Architecture Notes
+## 5. Performance and Known Limitations
 
-### Export Script Options
-- The export process utilizes `torch.jit.trace` with `FLOAT32` precision to preserve the ATen computational graph, enabling the `coremltools` compiler to successfully apply Scaled Dot Product Attention (SDPA) fusion.
-- We intentionally omit `FLOAT16` casting during PyTorch export to bypass a known compiler hang in `coremltools` when exporting complex Vision Transformer models.
+### Performance
+(Tested on: Apple M1 Max, 10-core CPU, 32GB RAM)
 
-### Batch Processing
-- Dynamic batch sizes (e.g., `RangeDim`) often trigger shape inference errors within the downstream MIL compiler for sequence transformations (e.g., `[B, C, H, W]` to `[B, H*W, C]`).
-- To avoid these errors, models are exported with a strict static batch size of `B=1`.
-- At runtime, the C++ inference engine wraps the `B=1` model in an `MLBatchProvider` (specifically `MLArrayBatchProvider`). This allows the Metal API to efficiently schedule and parallelize inference for multiple detections (e.g., multiple people) in a single pass, maximizing GPU utilization.
+The first frame takes around 700 ms due to ANE/GPU warmup, but in the steady state from the second frame onwards, you can expect an approximate latency of **400 ms / frame (2.5 fps)**.
+
+| Module | CoreML Measured (Steady State) | ONNX Runtime (CUDA Baseline) |
+| :--- | :--- | :--- |
+| **YOLOv11m** | ~20 ms | ~15 ms |
+| **Backbone** | ~360 ms | ~191 ms |
+| **Decoder** | ~13 ms | ~8.6 ms |
+
+### Known Limitations & Architecture Notes
+- **Decoder Batch Size Constraint**: Apple's GPU (Metal) compiler (E5RT) does not permit complex tensor reshaping (e.g. `view` for Attention `Q, K, V`) containing dynamic dimensions. If dynamic batch sizes (`RangeDim`) are used, shape inference fails at compile time, causing a silent fallback to CPU execution which severely degrades performance. Therefore, the Decoder is strictly compiled with a static batch size of **`B=1`**. At runtime, the C++ inference engine wraps the `B=1` model in an `MLArrayBatchProvider` to efficiently schedule and parallelize inference for multiple detections.
+- **Backbone Computation Speed**: The CoreML execution of the Backbone currently takes significantly longer compared to ONNX Runtime (CUDA). This may improve in the future if model graph optimizations or full ANE mapping are introduced.
+- **Export Script Options**: The export process utilizes `torch.jit.trace` with `FLOAT32` precision to preserve the ATen computational graph, enabling the `coremltools` compiler to successfully apply Scaled Dot Product Attention (SDPA) fusion. We intentionally omit `FLOAT16` casting during PyTorch export to bypass a known compiler hang in `coremltools` when exporting complex Vision Transformer models.

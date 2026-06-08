@@ -5,6 +5,14 @@ label=-2 (no keypoints), so _embed_keypoints always returns zeros. Bypassing avo
 the data-dependent assert (points.min() >= 0) which EXIR cannot trace.
 """
 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import argparse
 import os
 import sys
@@ -130,9 +138,9 @@ def load_decoder(checkpoint_dir: str, size: int) -> CoreMLDecoderWrapper:
 
 def smoke_forward(wrapper: CoreMLDecoderWrapper, size: int):
     feat_hw = size // 16
-    feat = torch.randn(2, BACKBONE_DIM, feat_hw, feat_hw)
-    cond = torch.randn(2, 3)
-    ray = torch.randn(2, 2, feat_hw, feat_hw)
+    feat = torch.randn(1, BACKBONE_DIM, feat_hw, feat_hw)
+    cond = torch.randn(1, 3)
+    ray = torch.randn(1, 2, feat_hw, feat_hw)
     t0 = time.time()
     with torch.no_grad():
         out = wrapper(feat, cond, ray)
@@ -155,18 +163,12 @@ def convert_coreml(
 
     feat, cond, ray = example_inputs
     feat_hw = size // 16
-    batch_dim = torch.export.Dim("batch", min=1, max=16)
-    dynamic_shapes = ({0: batch_dim}, {0: batch_dim}, {0: batch_dim})
 
-    print("exporting to EXIR...", flush=True)
+    print("tracing B=1...", flush=True)
     t0 = time.time()
     with torch.no_grad():
-        exported = torch.export.export(
-            wrapper, (feat, cond, ray), dynamic_shapes=dynamic_shapes
-        )
-    print("exported %.2fs" % (time.time() - t0), flush=True)
-
-    exported = exported.run_decompositions()
+        exported = torch.jit.trace(wrapper, (feat, cond, ray))
+    print("traced %.2fs" % (time.time() - t0), flush=True)
 
     print("converting to CoreML MLProgram fp16...", flush=True)
     t0 = time.time()
@@ -176,22 +178,21 @@ def convert_coreml(
             ct.TensorType(
                 name="features",
                 shape=ct.Shape(
-                    shape=(ct.RangeDim(1, 16), BACKBONE_DIM, feat_hw, feat_hw)
+                    shape=(1, BACKBONE_DIM, feat_hw, feat_hw)
                 ),
             ),
             ct.TensorType(
-                name="condition_info", shape=ct.Shape(shape=(ct.RangeDim(1, 16), 3))
+                name="condition_info", shape=ct.Shape(shape=(1, 3))
             ),
             ct.TensorType(
                 name="ray_cond",
-                shape=ct.Shape(shape=(ct.RangeDim(1, 16), 2, feat_hw, feat_hw)),
+                shape=ct.Shape(shape=(1, 2, feat_hw, feat_hw)),
             ),
         ],
         outputs=[ct.TensorType(name="pose_token")],
         convert_to="mlprogram",
         compute_precision=ct.precision.FLOAT16,
-        minimum_deployment_target=ct.target.macOS26,
-        skip_model_load=True,
+        minimum_deployment_target=ct.target.macOS14,
     )
     print("converted %.2fs" % (time.time() - t0), flush=True)
 

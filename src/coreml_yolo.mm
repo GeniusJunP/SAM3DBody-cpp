@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreML/CoreML.h>
 #import <CoreVideo/CoreVideo.h>
+#import <Accelerate/Accelerate.h>
 #include "coreml_utils.h"
 #include <iostream>
 #include <vector>
@@ -171,23 +172,15 @@ bool CoreMLYolo::run(const float* input_bchw, float* output) {
         uint8_t* base = (uint8_t*)CVPixelBufferGetBaseAddress(impl_->cached_input_pb);
         size_t stride = CVPixelBufferGetBytesPerRow(impl_->cached_input_pb);
 
-        for (int y = 0; y < 640; ++y) {
-            for (int x = 0; x < 640; ++x) {
-                float r = input_bchw[0 * 640 * 640 + y * 640 + x];
-                float g = input_bchw[1 * 640 * 640 + y * 640 + x];
-                float b = input_bchw[2 * 640 * 640 + y * 640 + x];
-                
-                // Clamp and scale to [0, 255]
-                r = std::max(0.0f, std::min(255.0f, r * 255.0f));
-                g = std::max(0.0f, std::min(255.0f, g * 255.0f));
-                b = std::max(0.0f, std::min(255.0f, b * 255.0f));
+        vImage_Buffer red_buf   = { (void*)(input_bchw + 0 * 640 * 640), 640, 640, 640 * sizeof(float) };
+        vImage_Buffer green_buf = { (void*)(input_bchw + 1 * 640 * 640), 640, 640, 640 * sizeof(float) };
+        vImage_Buffer blue_buf  = { (void*)(input_bchw + 2 * 640 * 640), 640, 640, 640 * sizeof(float) };
+        vImage_Buffer dest_buf  = { base, 640, 640, stride };
 
-                base[y * stride + x * 4 + 0] = (uint8_t)b; // B
-                base[y * stride + x * 4 + 1] = (uint8_t)g; // G
-                base[y * stride + x * 4 + 2] = (uint8_t)r; // R
-                base[y * stride + x * 4 + 3] = 255;        // A
-            }
-        }
+        Pixel_FFFF maxFloat = { 1.0f, 1.0f, 1.0f, 1.0f };
+        Pixel_FFFF minFloat = { 0.0f, 0.0f, 0.0f, 0.0f };
+        vImageConvert_PlanarFToBGRX8888(&blue_buf, &green_buf, &red_buf, 255, &dest_buf, maxFloat, minFloat, 0);
+
         CVPixelBufferUnlockBaseAddress(impl_->cached_input_pb, 0);
 
         MLFeatureValue* imageFeature = [MLFeatureValue featureValueWithPixelBuffer:impl_->cached_input_pb];

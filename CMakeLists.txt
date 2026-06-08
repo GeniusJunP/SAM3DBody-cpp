@@ -332,7 +332,7 @@ endif()
 
 if(FSB_COREML AND APPLE)
     target_compile_definitions(fast_sam_3dbody PUBLIC FSB_COREML)
-    target_link_libraries(fast_sam_3dbody PUBLIC "-framework Foundation" "-framework CoreML" "-framework CoreVideo")
+    target_link_libraries(fast_sam_3dbody PUBLIC "-framework Foundation" "-framework CoreML" "-framework CoreVideo" "-framework Accelerate")
     set_source_files_properties(src/coreml_backbone.mm src/coreml_yolo.mm src/coreml_decoder.mm src/coreml_utils.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
     target_link_libraries(fast_sam_3dbody PUBLIC $<$<NOT:$<BOOL:${APPLE}>>:rt>)
