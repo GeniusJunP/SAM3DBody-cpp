@@ -1,6 +1,7 @@
+#include "coreml_yolo.h"
+
 #import <Foundation/Foundation.h>
 #import <CoreML/CoreML.h>
-#include "coreml_yolo.h"
 #include "coreml_utils.h"
 #include <iostream>
 #include <vector>
@@ -9,19 +10,30 @@
 #error "This file must be compiled with ARC."
 #endif
 
-struct CoreMLYoloCtx {
-    MLModel* model;
-    MLMultiArray* cached_input;
-    MLDictionaryFeatureProvider* cached_provider;
+namespace fsb {
+
+struct CoreMLYolo::Impl {
+    MLModel* model = nil;
+    NSURL* compiled_url = nil;
+    MLMultiArray* cached_input = nil;
+    MLDictionaryFeatureProvider* cached_provider = nil;
 };
 
-extern "C" CoreMLYoloContext init_coreml_yolo(const char* mlpackage_path) {
+CoreMLYolo::CoreMLYolo() : impl_(new Impl()) {}
+
+CoreMLYolo::~CoreMLYolo() {
+    free();
+}
+
+bool CoreMLYolo::load(const std::string& mlpackage_path, ComputeUnit compute_units) {
     @autoreleasepool {
-        NSString* path = [NSString stringWithUTF8String:mlpackage_path];
+        free();
+        
+        NSString* path = [NSString stringWithUTF8String:mlpackage_path.c_str()];
         NSURL* url = [NSURL fileURLWithPath:path];
         if (!url) {
             std::cerr << "[CoreML YOLO] Invalid path." << std::endl;
-            return nullptr;
+            return false;
         }
 
         NSError* error = nil;
@@ -30,55 +42,59 @@ extern "C" CoreMLYoloContext init_coreml_yolo(const char* mlpackage_path) {
             compiledUrl = [MLModel compileModelAtURL:url error:&error];
             if (error) {
                 std::cerr << "[CoreML YOLO] Compile error: " << error.localizedDescription.UTF8String << std::endl;
-                return nullptr;
+                return false;
             }
+            impl_->compiled_url = compiledUrl;
         }
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsAll;
+        config.computeUnits = (MLComputeUnits)compute_units;
 
         MLModel* model = [MLModel modelWithContentsOfURL:compiledUrl configuration:config error:&error];
         if (error || !model) {
             std::cerr << "[CoreML YOLO] Load error: " << (error ? error.localizedDescription.UTF8String : "Unknown") << std::endl;
-            return nullptr;
+            return false;
         }
 
-        CoreMLYoloCtx* ctx = new CoreMLYoloCtx();
-        ctx->model = model;
+        impl_->model = model;
 
-        ctx->cached_input = [[MLMultiArray alloc] initWithShape:@[@1, @3, @640, @640] 
+        impl_->cached_input = [[MLMultiArray alloc] initWithShape:@[@1, @3, @640, @640] 
                                                        dataType:MLMultiArrayDataTypeFloat32 
                                                           error:&error];
 
-        ctx->cached_provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"images": ctx->cached_input} error:&error];
+        impl_->cached_provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"images": impl_->cached_input} error:&error];
 
-        return (CoreMLYoloContext)ctx;
+        return true;
     }
 }
 
-extern "C" void free_coreml_yolo(CoreMLYoloContext ctx_ptr) {
+void CoreMLYolo::free() {
     @autoreleasepool {
-        if (!ctx_ptr) return;
-        CoreMLYoloCtx* ctx = (CoreMLYoloCtx*)ctx_ptr;
-        ctx->model = nil;
-        ctx->cached_input = nil;
-        ctx->cached_provider = nil;
-        delete ctx;
+        if (impl_->compiled_url) {
+            [[NSFileManager defaultManager] removeItemAtURL:impl_->compiled_url error:nil];
+            impl_->compiled_url = nil;
+        }
+        impl_->model = nil;
+        impl_->cached_input = nil;
+        impl_->cached_provider = nil;
     }
 }
 
-extern "C" bool run_coreml_yolo(CoreMLYoloContext ctx_ptr, const float* input_bchw, float* output) {
+bool CoreMLYolo::loaded() const {
+    return impl_->model != nil;
+}
+
+bool CoreMLYolo::run(const float* input_bchw, float* output) {
     @autoreleasepool {
-        if (!ctx_ptr) return false;
-        CoreMLYoloCtx* ctx = (CoreMLYoloCtx*)ctx_ptr;
+        if (!impl_->model) return false;
 
         NSError* error = nil;
 
         // Copy data to cached input
-        float* inPtr = (float*)ctx->cached_input.dataPointer;
+        float* inPtr = (float*)impl_->cached_input.dataPointer;
         std::memcpy(inPtr, input_bchw, 1 * 3 * 640 * 640 * sizeof(float));
 
-        id<MLFeatureProvider> outProvider = [ctx->model predictionFromFeatures:ctx->cached_provider error:&error];
+        id<MLFeatureProvider> outProvider = [impl_->model predictionFromFeatures:impl_->cached_provider error:&error];
         if (error || !outProvider) {
             std::cerr << "[CoreML YOLO] Prediction error: " << (error ? error.localizedDescription.UTF8String : "Unknown") << std::endl;
             return false;
@@ -140,3 +156,5 @@ extern "C" bool run_coreml_yolo(CoreMLYoloContext ctx_ptr, const float* input_bc
         return true;
     }
 }
+
+} // namespace fsb

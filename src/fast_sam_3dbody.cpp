@@ -372,8 +372,8 @@ struct Pipeline::Impl
     Ort::Env        ort_env{ORT_LOGGING_LEVEL_WARNING, "fast_sam_3dbody"};
     OrtSession      sess_yolo, sess_backbone, sess_decoder, sess_body;
     CoreMLBackbone  coreml_backbone;
-    CoreMLYoloContext    coreml_yolo    = nullptr;
-    CoreMLDecoderContext coreml_decoder = nullptr;
+    CoreMLYolo      coreml_yolo;
+    CoreMLDecoder   coreml_decoder;
 
     // CPU FFNs for MHR + camera heads (weights loaded from GGUF)
     CFFN mhr_ffn, cam_ffn;
@@ -421,34 +421,39 @@ struct Pipeline::Impl
             return cfg.onnx_dir + "/" + f;
         };
 
+#ifdef __APPLE__
         if (!cfg.coreml_backbone_path.empty()) {
             printf("[FSB] Loading CoreML backbone … "); fflush(stdout);
-            if (!coreml_backbone.load(cfg.coreml_backbone_path)) return false;
+            if (!coreml_backbone.load(cfg.coreml_backbone_path, ComputeUnit::CPUAndGPU)) return false;
             printf("OK\n");
-            goto skip_onnx_load_backbone;
-        }
+        } else {
+#endif
         printf("[FSB] Loading backbone … ");
         fflush(stdout);
         if (!sess_backbone.load(ort_env, opath(cfg.backbone_name.c_str()), cuda, dev,
                                 cfg.use_fp16, cfg.use_trt_ep))
             return false;
         printf("OK\n");
-skip_onnx_load_backbone:;
+#ifdef __APPLE__
+        }
+#endif
 
+#ifdef __APPLE__
         if (!cfg.coreml_decoder_path.empty()) {
             printf("[FSB] Loading CoreML decoder … "); fflush(stdout);
-            coreml_decoder = init_coreml_decoder(cfg.coreml_decoder_path.c_str());
-            if (!coreml_decoder) return false;
+            if (!coreml_decoder.load(cfg.coreml_decoder_path, ComputeUnit::CPUAndGPU)) return false;
             printf("OK\n");
-            goto skip_onnx_load_decoder;
-        }
+        } else {
+#endif
         printf("[FSB] Loading decoder  … ");
         fflush(stdout);
         if (!sess_decoder.load(ort_env, opath(cfg.decoder_name.c_str()), cuda, dev,
                                cfg.use_fp16, cfg.use_trt_ep))
             return false;
         printf("OK\n");
-skip_onnx_load_decoder:;
+#ifdef __APPLE__
+        }
+#endif
 
         if (!cfg.skip_body_model)
         {
@@ -542,13 +547,13 @@ skip_onnx_load_decoder:;
         }
 
         // YOLO – optional (might not exist for image-only usage)
+#ifdef __APPLE__
         if (!cfg.coreml_yolo_path.empty()) {
             printf("[FSB] Loading CoreML YOLO … "); fflush(stdout);
-            coreml_yolo = init_coreml_yolo(cfg.coreml_yolo_path.c_str());
-            if (!coreml_yolo) fprintf(stderr, "[FSB] CoreML YOLO load failed – detection disabled\n");
+            if (!coreml_yolo.load(cfg.coreml_yolo_path)) fprintf(stderr, "[FSB] CoreML YOLO load failed – detection disabled\n");
             else printf("OK\n");
-            goto skip_onnx_load_yolo;
-        }
+        } else {
+#endif
         if (!cfg.yolo_path.empty())
         {
             printf("[FSB] Loading YOLO … ");
@@ -562,7 +567,9 @@ skip_onnx_load_decoder:;
                 printf("OK\n");
             }
         }
-skip_onnx_load_yolo:;
+#ifdef __APPLE__
+        }
+#endif
 
         // ── ggml / GGUF ───────────────────────────────────────────────────────
         printf("[FSB] Loading pipeline.gguf … ");
@@ -649,7 +656,8 @@ skip_onnx_load_yolo:;
         auto t0 = Clock::now();
         std::vector<PersonDet> dets;
 
-        if (coreml_yolo) {
+#ifdef __APPLE__
+        if (coreml_yolo.loaded()) {
             const int YW = 640, YH = 640;
             float scale = std::min(float(YW) / float(W), float(YH) / float(H));
             int new_w = (int)std::round(W * scale);
@@ -664,7 +672,7 @@ skip_onnx_load_yolo:;
             
             int nd = 8400;
             std::vector<float> row_major(nd * 56);
-            if (!run_coreml_yolo(coreml_yolo, yolo_blob.ptr<float>(), row_major.data())) {
+            if (!coreml_yolo.run(yolo_blob.ptr<float>(), row_major.data())) {
                 fprintf(stderr, "[FSB] CoreML YOLO inference failed\n");
             } else {
                 dets = parse_yolo_output(row_major.data(), nd, cfg.person_thresh, cfg.person_nms_iou);
@@ -681,8 +689,8 @@ skip_onnx_load_yolo:;
                     }
                 }
             }
-            goto skip_onnx_yolo;
-        }
+        } else {
+#endif
 
         if (sess_yolo.session)
         {
@@ -791,7 +799,9 @@ skip_onnx_load_yolo:;
                 fprintf(stderr, "[FSB] YOLO inference error: %s\n", e.what());
             }
         }
-skip_onnx_yolo:;
+#ifdef __APPLE__
+        }
+#endif
 
         // Fallback: full image as single detection
         if (dets.empty())
@@ -849,11 +859,13 @@ skip_onnx_yolo:;
         Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
         std::vector<float> features(feat_elems);
-        std::vector<void*> opaque_features(B, nullptr);
+        std::shared_ptr<void> coreml_features = nullptr;
+#ifdef __APPLE__
         if (coreml_backbone.loaded()) {
-            if (!coreml_backbone.run(batch_crops.data(), B, features.data(), opaque_features.data())) return {};
-            goto skip_onnx_backbone;
-        }
+            std::shared_ptr<void>* retained_features = coreml_decoder.loaded() ? &coreml_features : nullptr;
+            if (!coreml_backbone.run(batch_crops.data(), B, features.data(), retained_features)) return {};
+        } else {
+#endif
 
         {
         std::vector<int64_t> img_shape{B, 3, CROP_SIZE, CROP_SIZE};
@@ -866,7 +878,9 @@ skip_onnx_yolo:;
                                 sess_backbone.output_names.data(), 1);
         std::copy(feat_ptr, feat_ptr + feat_elems, features.begin());
         }
-skip_onnx_backbone:;
+#ifdef __APPLE__
+        }
+#endif
         double dt_bb = ms(t0);
         timers.backbone += dt_bb;
         printf("[FSB] backbone:   %.1f ms\n", dt_bb);
@@ -881,19 +895,20 @@ skip_onnx_backbone:;
         std::vector<int64_t> ray_shape {B, 2, FEAT_HW, FEAT_HW};
 
         std::vector<float> pose_tokens(token_elems);
-        if (coreml_decoder) {
-            for (int i = 0; i < B; ++i) {
-                if (!run_coreml_decoder(coreml_decoder,
-                                        features.data() + i * BACKBONE_DIM * FEAT_HW * FEAT_HW,
-                                        batch_cond.data() + i * 3,
-                                        batch_ray.data() + i * 2 * FEAT_HW * FEAT_HW,
-                                        pose_tokens.data() + i * DECODER_DIM,
-                                        opaque_features[i])) {
-                    fprintf(stderr, "[FSB] CoreML Decoder inference failed for person %d\n", i);
-                }
+#ifdef __APPLE__
+        if (coreml_decoder.loaded()) {
+            if (!coreml_decoder.run(B,
+                                    features.data(),
+                                    batch_cond.data(),
+                                    batch_ray.data(),
+                                    pose_tokens.data(),
+                                    DECODER_DIM,
+                                    coreml_features)) {
+                fprintf(stderr, "[FSB] CoreML Decoder inference failed for batch\n");
+                return {};
             }
-            goto skip_onnx_decoder;
-        }
+        } else {
+#endif
 
         {
         Ort::Value feat_t = Ort::Value::CreateTensor<float>(
@@ -917,14 +932,9 @@ skip_onnx_backbone:;
                                dec_out_names.data(), 1);
         std::copy(token_ptr, token_ptr + token_elems, pose_tokens.begin());
         }
-skip_onnx_decoder:;
-
-        // Clean up CoreML opaque pointers
-        for (int i = 0; i < B; ++i) {
-            if (opaque_features[i]) {
-                fsb_coreml_release_opaque(opaque_features[i]);
-            }
+#ifdef __APPLE__
         }
+#endif
         double dt_dec = ms(t0);
         timers.decoder += dt_dec;
         printf("[FSB] decoder:    %.1f ms\n", dt_dec);
@@ -1321,8 +1331,8 @@ skip_onnx_decoder:;
         cam_ffn = CFFN{};
         sess_backbone.free();
         coreml_backbone.free();
-        if (coreml_decoder) { free_coreml_decoder(coreml_decoder); coreml_decoder = nullptr; }
-        if (coreml_yolo) { free_coreml_yolo(coreml_yolo); coreml_yolo = nullptr; }
+        coreml_decoder.free();
+        coreml_yolo.free();
         sess_decoder.free();
         sess_body.free();
         sess_yolo.free();

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include "coreml_utils.h"
 
 namespace fsb {
 
@@ -13,11 +14,13 @@ public:
     CoreMLBackbone(const CoreMLBackbone&) = delete;
     CoreMLBackbone& operator=(const CoreMLBackbone&) = delete;
 
-    bool load(const std::string& mlpackage_path);
+    bool load(const std::string& mlpackage_path, ComputeUnit compute_units = ComputeUnit::All);
 
-    // Runs a fixed-shape SAM3D backbone exported as [1,3,512,512] -> [1,1280,32,32].
-    // Batch inputs are handled by invoking the CoreML model once per person.
-    bool run(const float* input_nchw, int batch, float* output_nchw, void** opaque_out = nullptr);
+    // Runs SAM3D backbone on [B,3,S,S].
+    // If retained_features_out is set, it receives a retained CoreML batch output
+    // for zero-copy handoff to the CoreML decoder and output_nchw is left untouched.
+    bool run(const float* input_nchw, int batch, float* output_nchw,
+             std::shared_ptr<void>* retained_features_out = nullptr);
 
     void free();
     bool loaded() const;

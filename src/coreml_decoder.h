@@ -1,35 +1,40 @@
 #pragma once
 
-#include <stdbool.h>
+#include <memory>
+#include <string>
+#include "coreml_utils.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace fsb {
 
-// Opaque context pointer
-typedef void* CoreMLDecoderContext;
+class CoreMLDecoder {
+public:
+    CoreMLDecoder();
+    ~CoreMLDecoder();
 
-// Initialize the CoreML model
-CoreMLDecoderContext init_coreml_decoder(const char* mlpackage_path);
+    CoreMLDecoder(const CoreMLDecoder&) = delete;
+    CoreMLDecoder& operator=(const CoreMLDecoder&) = delete;
 
-// Free the context
-void free_coreml_decoder(CoreMLDecoderContext ctx);
+    bool load(const std::string& mlpackage_path, ComputeUnit compute_units = ComputeUnit::All);
 
-// Run inference
-// features: float array [1, 1280, 32, 32]
-// condition_info: float array [1, 3]
-// ray_cond: float array [1, 2, 32, 32]
-// pose_token_out: float array [1, 1024] (output)
-bool run_coreml_decoder(CoreMLDecoderContext ctx,
-                        const float* features,
-                        const float* condition_info,
-                        const float* ray_cond,
-                        float* pose_token_out
-#ifdef __cplusplus
-                        , void* opaque_in = nullptr
-#endif
-                        );
+    // Run inference
+    // features: float array [B, 1280, H, W]
+    // condition_info: float array [B, 3]
+    // ray_cond: float array [B, 2, H, W]
+    // pose_token_out: float array [B, pose_token_dim] (output)
+    bool run(int batch,
+             const float* features,
+             const float* condition_info,
+             const float* ray_cond,
+             float* pose_token_out,
+             int pose_token_dim,
+             std::shared_ptr<void> opaque_in = nullptr);
 
-#ifdef __cplusplus
-}
-#endif
+    void free();
+    bool loaded() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace fsb

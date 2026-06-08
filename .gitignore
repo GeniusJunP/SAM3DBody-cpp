@@ -32,9 +32,7 @@ venv/
 error.txt
 *.valgrind.suppress
 screen*.jpg
-test_contiguous.cpp
-test.jpg
-person.jpg
+
 
 # Test data (large media)
 scripts/*.avi
@@ -68,7 +66,7 @@ coreml_export/*.csv
 # Build and artifacts
 build-metal/
 AmMatrix/libAmMatrix.a
+AmMatrix/libAmMatrixD.a
 coreml_export/*.mlpackage
 coreml_export/.venv*
 *.log
-

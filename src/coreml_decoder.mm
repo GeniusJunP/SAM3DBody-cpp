@@ -1,6 +1,7 @@
+#include "coreml_decoder.h"
+
 #import <Foundation/Foundation.h>
 #import <CoreML/CoreML.h>
-#include "coreml_decoder.h"
 #include <iostream>
 #include <vector>
 #include "coreml_utils.h"
@@ -9,21 +10,36 @@
 #error "This file must be compiled with ARC."
 #endif
 
-struct CoreMLDecoderCtx {
-    MLModel* model;
-    MLMultiArray* cached_features;
-    MLMultiArray* cached_cond;
-    MLMultiArray* cached_ray;
-    MLDictionaryFeatureProvider* cached_provider;
+#ifndef FSB_BACKBONE_SIZE
+#define FSB_BACKBONE_SIZE 512
+#endif
+
+namespace fsb {
+
+struct CoreMLDecoder::Impl {
+    MLModel* model = nil;
+    NSURL* compiled_url = nil;
+    MLMultiArray* cached_features = nil;
+    MLMultiArray* cached_cond = nil;
+    MLMultiArray* cached_ray = nil;
+    MLDictionaryFeatureProvider* cached_provider = nil;
 };
 
-extern "C" CoreMLDecoderContext init_coreml_decoder(const char* mlpackage_path) {
+CoreMLDecoder::CoreMLDecoder() : impl_(new Impl()) {}
+
+CoreMLDecoder::~CoreMLDecoder() {
+    free();
+}
+
+bool CoreMLDecoder::load(const std::string& mlpackage_path, ComputeUnit compute_units) {
     @autoreleasepool {
-        NSString* path = [NSString stringWithUTF8String:mlpackage_path];
+        free();
+        
+        NSString* path = [NSString stringWithUTF8String:mlpackage_path.c_str()];
         NSURL* url = [NSURL fileURLWithPath:path];
         if (!url) {
             std::cerr << "[CoreML Decoder] Invalid path." << std::endl;
-            return nullptr;
+            return false;
         }
 
         NSError* error = nil;
@@ -32,106 +48,114 @@ extern "C" CoreMLDecoderContext init_coreml_decoder(const char* mlpackage_path) 
             compiledUrl = [MLModel compileModelAtURL:url error:&error];
             if (error) {
                 std::cerr << "[CoreML Decoder] Compile error: " << error.localizedDescription.UTF8String << std::endl;
-                return nullptr;
+                return false;
             }
+            impl_->compiled_url = compiledUrl;
         }
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndGPU;
+        config.computeUnits = (MLComputeUnits)compute_units;
 
         MLModel* model = [MLModel modelWithContentsOfURL:compiledUrl configuration:config error:&error];
         if (error || !model) {
             std::cerr << "[CoreML Decoder] Load error: " << (error ? error.localizedDescription.UTF8String : "Unknown") << std::endl;
-            return nullptr;
+            return false;
         }
 
-        CoreMLDecoderCtx* ctx = new CoreMLDecoderCtx();
-        ctx->model = model;
+        impl_->model = model;
 
         int feat_hw = FSB_BACKBONE_SIZE / 16;
-        ctx->cached_features = [[MLMultiArray alloc] initWithShape:@[@1, @1280, @(feat_hw), @(feat_hw)]
+        impl_->cached_features = [[MLMultiArray alloc] initWithShape:@[@1, @1280, @(feat_hw), @(feat_hw)]
                                                           dataType:MLMultiArrayDataTypeFloat32
                                                              error:&error];
 
-        ctx->cached_cond = [[MLMultiArray alloc] initWithShape:@[@1, @3]
+        impl_->cached_cond = [[MLMultiArray alloc] initWithShape:@[@1, @3]
                                                       dataType:MLMultiArrayDataTypeFloat32
                                                          error:&error];
 
-        ctx->cached_ray = [[MLMultiArray alloc] initWithShape:@[@1, @2, @(feat_hw), @(feat_hw)]
+        impl_->cached_ray = [[MLMultiArray alloc] initWithShape:@[@1, @2, @(feat_hw), @(feat_hw)]
                                                      dataType:MLMultiArrayDataTypeFloat32
                                                         error:&error];
 
-        ctx->cached_provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{
-            @"features": ctx->cached_features,
-            @"condition_info": ctx->cached_cond,
-            @"ray_cond": ctx->cached_ray
+        impl_->cached_provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{
+            @"features": impl_->cached_features,
+            @"condition_info": impl_->cached_cond,
+            @"ray_cond": impl_->cached_ray
         } error:&error];
 
-        return (CoreMLDecoderContext)ctx;
+        return true;
     }
 }
 
-extern "C" void free_coreml_decoder(CoreMLDecoderContext ctx_ptr) {
+void CoreMLDecoder::free() {
     @autoreleasepool {
-        if (!ctx_ptr) return;
-        CoreMLDecoderCtx* ctx = (CoreMLDecoderCtx*)ctx_ptr;
-        ctx->model = nil;
-        ctx->cached_features = nil;
-        ctx->cached_cond = nil;
-        ctx->cached_ray = nil;
-        ctx->cached_provider = nil;
-        delete ctx;
+        if (impl_->compiled_url) {
+            [[NSFileManager defaultManager] removeItemAtURL:impl_->compiled_url error:nil];
+            impl_->compiled_url = nil;
+        }
+        impl_->model = nil;
+        impl_->cached_features = nil;
+        impl_->cached_cond = nil;
+        impl_->cached_ray = nil;
+        impl_->cached_provider = nil;
     }
 }
 
-extern "C" bool run_coreml_decoder(CoreMLDecoderContext ctx_ptr,
-                                   const float* features,
-                                   const float* condition_info,
-                                   const float* ray_cond,
-                                   float* pose_token_out
-#ifdef __cplusplus
-                                   , void* opaque_in
-#endif
-                                   ) {
+bool CoreMLDecoder::loaded() const {
+    return impl_->model != nil;
+}
+
+bool CoreMLDecoder::run(int batch,
+                        const float* features,
+                        const float* condition_info,
+                        const float* ray_cond,
+                        float* pose_token_out,
+                        int pose_token_dim,
+                        std::shared_ptr<void> opaque_in) {
     @autoreleasepool {
-        if (!ctx_ptr) return false;
-        CoreMLDecoderCtx* ctx = (CoreMLDecoderCtx*)ctx_ptr;
-
-        NSError* error = nil;
-
-        int feat_hw = FSB_BACKBONE_SIZE / 16;
-        std::memcpy((float*)ctx->cached_cond.dataPointer, condition_info, 1 * 3 * sizeof(float));
-        std::memcpy((float*)ctx->cached_ray.dataPointer, ray_cond, 1 * 2 * feat_hw * feat_hw * sizeof(float));
-
-        id<MLFeatureProvider> provider = ctx->cached_provider;
-#ifdef __cplusplus
-        if (opaque_in) {
-            MLMultiArray* directFeatures = (__bridge MLMultiArray*)opaque_in;
-
-            // Extract the raw data pointer and wrap it in a clean MLMultiArray
-            // to bypass the MPSGraph shape/stride assertion bug when chaining outputs.
-            // We MUST preserve the exact original shape, dataType (e.g. Float16),
-            // and strides to prevent memory corruption and type mismatches.
-            MLMultiArray* wrappedFeatures = [[MLMultiArray alloc]
-                initWithDataPointer:directFeatures.dataPointer
-                              shape:directFeatures.shape
-                           dataType:directFeatures.dataType
-                            strides:directFeatures.strides
-                        deallocator:nil
-                              error:&error];
-
-            provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{
-                @"features": wrappedFeatures,
-                @"condition_info": ctx->cached_cond,
-                @"ray_cond": ctx->cached_ray
-            } error:&error];
-        } else
-#endif
-        {
-            std::memcpy((float*)ctx->cached_features.dataPointer, features, 1 * 1280 * feat_hw * feat_hw * sizeof(float));
+        if (!impl_->model || batch <= 0 || !condition_info || !ray_cond || !pose_token_out || pose_token_dim <= 0) {
+            return false;
+        }
+        if (!opaque_in && !features) {
+            return false;
         }
 
-        id<MLFeatureProvider> outProvider = [ctx->model predictionFromFeatures:provider error:&error];
+        NSError* error = nil;
+        int feat_hw = FSB_BACKBONE_SIZE / 16;
+
+        if (!impl_->cached_cond || [impl_->cached_cond.shape[0] intValue] != batch) {
+            impl_->cached_cond = [[MLMultiArray alloc] initWithShape:@[@(batch), @3]
+                                                          dataType:MLMultiArrayDataTypeFloat32
+                                                             error:&error];
+            impl_->cached_ray = [[MLMultiArray alloc] initWithShape:@[@(batch), @2, @(feat_hw), @(feat_hw)]
+                                                         dataType:MLMultiArrayDataTypeFloat32
+                                                            error:&error];
+            impl_->cached_features = [[MLMultiArray alloc] initWithShape:@[@(batch), @1280, @(feat_hw), @(feat_hw)]
+                                                              dataType:MLMultiArrayDataTypeFloat32
+                                                                 error:&error];
+            impl_->cached_provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{
+                @"features": impl_->cached_features,
+                @"condition_info": impl_->cached_cond,
+                @"ray_cond": impl_->cached_ray
+            } error:&error];
+        }
+
+        std::memcpy((float*)impl_->cached_cond.dataPointer, condition_info, batch * 3 * sizeof(float));
+        std::memcpy((float*)impl_->cached_ray.dataPointer, ray_cond, batch * 2 * feat_hw * feat_hw * sizeof(float));
+
+        id<MLFeatureProvider> provider = impl_->cached_provider;
+        if (opaque_in) {
+            MLMultiArray* directFeatures = (__bridge MLMultiArray*)opaque_in.get();
+            provider = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{
+                @"features": directFeatures,
+                @"condition_info": impl_->cached_cond,
+                @"ray_cond": impl_->cached_ray
+            } error:&error];
+        } else {
+            std::memcpy((float*)impl_->cached_features.dataPointer, features, batch * 1280 * feat_hw * feat_hw * sizeof(float));
+        }
+
+        id<MLFeatureProvider> outProvider = [impl_->model predictionFromFeatures:provider error:&error];
         if (error || !outProvider) {
             std::cerr << "[CoreML Decoder] Prediction error: " << (error ? error.localizedDescription.UTF8String : "Unknown") << std::endl;
             return false;
@@ -158,6 +182,12 @@ extern "C" bool run_coreml_decoder(CoreMLDecoderContext ctx_ptr,
 
         bool is_contiguous = (St1 == 1 && St0 == S1);
         int output_elems = S0 * S1;
+        if (S0 != batch || S1 != pose_token_dim) {
+            std::cerr << "[CoreML Decoder] Unexpected output shape: ["
+                      << S0 << ", " << S1 << "], expected ["
+                      << batch << ", " << pose_token_dim << "]." << std::endl;
+            return false;
+        }
 
         if (is_contiguous) {
             if (mlOutput.dataType == MLMultiArrayDataTypeFloat32) {
@@ -199,3 +229,5 @@ extern "C" bool run_coreml_decoder(CoreMLDecoderContext ctx_ptr,
         return true;
     }
 }
+
+} // namespace fsb

@@ -5,8 +5,8 @@
 torch==2.7.0
 torchvision
 coremltools==9.0
-numpy
-opencv-python
+numpy<2.0.0
+
 timm
 huggingface_hub
 braceexpand

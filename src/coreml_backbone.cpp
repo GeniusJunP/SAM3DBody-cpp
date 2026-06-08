@@ -18,11 +18,13 @@ bool CoreMLBackbone::load(const std::string& mlpackage_path)
     return false;
 }
 
-bool CoreMLBackbone::run(const float* input_nchw, int batch, float* output_nchw, void** opaque_out)
+bool CoreMLBackbone::run(const float* input_nchw, int batch, float* output_nchw,
+                         void** retained_features_out)
 {
     (void)input_nchw;
     (void)batch;
     (void)output_nchw;
+    (void)retained_features_out;
     return false;
 }
 

@@ -194,7 +194,7 @@ endif()
 if(NOT TARGET onnxruntime::onnxruntime)
     set(ORT_INCLUDE_DIRS "${ONNX_RUNTIME_DIR}/include")
     set(ORT_LIB_DIR      "${ONNX_RUNTIME_DIR}/lib")
-    if(EXISTS "${ONNX_RUNTIME_DIR}/include/onnxruntime/onnxruntime_cxx_api.h")
+    if(EXISTS "${ONNX_RUNTIME_DIR}/include/onnxruntime_cxx_api.h")
         list(APPEND ORT_INCLUDE_DIRS "${ONNX_RUNTIME_DIR}/include/onnxruntime")
     endif()
 
@@ -257,9 +257,16 @@ endif()
 set(MOCAP_DIR ${GRAPHICS_ENGINE_DIR}/MotionCaptureLoader)
 set(TRAJ_DIR  ${GRAPHICS_ENGINE_DIR}/TrajectoryParser)
 
-set(FSB_COREML_SOURCE src/coreml_backbone.cpp src/coreml_yolo.cpp src/coreml_decoder.cpp src/coreml_utils.cpp)
-if(APPLE)
+# On Apple, build the Objective-C++ CoreML backend.
+# On Linux/Windows, build the C++ stubs.
+#
+# Usage:  cmake -DFSB_COREML=ON ..   (macOS only)
+# ---------------------------------------------------------------------------
+option(FSB_COREML "Enable CoreML acceleration (macOS only)" OFF)
+if(FSB_COREML AND APPLE)
     set(FSB_COREML_SOURCE src/coreml_backbone.mm src/coreml_yolo.mm src/coreml_decoder.mm src/coreml_utils.mm)
+else()
+    set(FSB_COREML_SOURCE src/coreml_backbone.cpp src/coreml_yolo.cpp src/coreml_decoder.cpp src/coreml_utils.cpp)
 endif()
 
 add_library(fast_sam_3dbody SHARED
@@ -322,7 +329,9 @@ endif()
 if(SAM3D_BACKBONE_QUANT)
     target_compile_definitions(fast_sam_3dbody PUBLIC SAM3D_BACKBONE_QUANT)
 endif()
-if(APPLE)
+
+if(FSB_COREML AND APPLE)
+    target_compile_definitions(fast_sam_3dbody PUBLIC FSB_COREML)
     target_link_libraries(fast_sam_3dbody PUBLIC "-framework Foundation" "-framework CoreML")
     set_source_files_properties(src/coreml_backbone.mm src/coreml_yolo.mm src/coreml_decoder.mm src/coreml_utils.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
@@ -379,30 +388,29 @@ if(NOT WIN32)
         ${ORT_INCLUDE_DIRS}
         ${OpenCV_INCLUDE_DIRS}
         ${GLEW_INCLUDE_DIRS}
+        $<$<BOOL:${APPLE}>:${X11_INCLUDE_DIR}>
+    )
+    if(APPLE)
+        target_include_directories(fast_sam_3dbody_render PRIVATE /opt/homebrew/include /opt/X11/include)
+    endif()
+
+    target_link_libraries(fast_sam_3dbody_render PRIVATE
+        fast_sam_3dbody
+        OpenGL::GL
+        GLEW::GLEW
+        ${OpenCV_LIBS}
+        $<$<BOOL:${APPLE}>:${X11_LIBRARIES}>
+        $<$<NOT:$<BOOL:${APPLE}>>:X11>
+        $<$<NOT:$<BOOL:${APPLE}>>:rt>
+        m
+        AmMatrix
     )
 
     if(APPLE)
-        target_link_directories(fast_sam_3dbody_render PRIVATE /opt/homebrew/lib /opt/X11/lib)
-        target_link_libraries(fast_sam_3dbody_render PRIVATE
-            fast_sam_3dbody
-            GL
-            GLEW::GLEW
-            ${OpenCV_LIBS}
-            X11
-            m
-            AmMatrix
-        )
-    else()
-        target_link_libraries(fast_sam_3dbody_render PRIVATE
-            fast_sam_3dbody
-            OpenGL::GL
-            GLEW::GLEW
-            ${OpenCV_LIBS}
-            X11
-            ${RT_LIB}
-            ${MATH_LIB}
-            AmMatrix
-        )
+        # macOS: Prioritize XQuartz headers over Conda's tk dummy headers
+        target_include_directories(fast_sam_3dbody_render BEFORE PRIVATE /opt/X11/include /opt/homebrew/include)
+        # Force linking to XQuartz libGL instead of macOS system OpenGL.framework
+        target_link_libraries(fast_sam_3dbody_render PRIVATE /opt/X11/lib/libGL.dylib)
     endif()
 
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")

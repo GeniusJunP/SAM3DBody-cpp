@@ -591,10 +591,6 @@ int main(int argc, const char** argv) {
     int         max_frames        = -1;     // --frames N: stop after N frames
     int         start_frame       = 0;      // --start N: seek to frame N first
     int         max_persons       = 0;      // --max-persons N: 0 = unlimited
-    int         detector          = fsb::PipelineConfig::DET_YOLO_POSE; // --detector
-    int  cuda_device  = 0;
-    bool use_trt      = false;
-    bool fp16         = true;
     bool zero_face    = true;
     int    render_w   = 0;   // GL window width  (0 = match input)
     int    render_h   = 0;   // GL window height (0 = match input)
@@ -661,9 +657,6 @@ int main(int argc, const char** argv) {
     gguf_path                      = cc.gguf_path;
     yolo_path                      = cc.yolo_path;
     src                            = cc.from;
-    cuda_device                    = cc.cuda_device;
-    use_trt                        = cc.use_trt;
-    fp16                           = cc.fp16;
     bvh_path                       = cc.bvh_path;
     bvh_template                   = cc.bvh_template;
     bvh_body_shape_change          = cc.bvh_body_shape_change;
@@ -687,22 +680,8 @@ int main(int argc, const char** argv) {
     fsb::Pipeline pipeline;
     {
         fsb::PipelineConfig cfg;
-        cfg.onnx_dir        = onnx_dir;
-        cfg.backbone_name   = cc.backbone_name;   // honour --backbone / fp16 auto-prefer
-        cfg.decoder_name    = cc.decoder_name;    // honour --trt decoder_fp16 auto-swap
-        cfg.gguf_path       = gguf_path;
-        cfg.yolo_path       = yolo_path;
-        cfg.cuda_device     = cuda_device;
-        cfg.use_trt_ep      = use_trt;
-        cfg.use_fp16        = fp16;
-        cfg.max_persons     = max_persons;
-        cfg.detector        = detector;
-        cfg.person_thresh   = cc.person_thresh;   // honour --detector-threshold / per-detector default
-        cfg.person_nms_iou  = cc.person_nms_iou;
+        apply_common_to_pipeline_cfg(cc, cfg);
         cfg.skip_body_model = true;    // LBS runs natively in C; skip body_model.onnx
-        cfg.coreml_backbone_path = cc.coreml_backbone_path;
-        cfg.coreml_decoder_path  = cc.coreml_decoder_path;
-        cfg.coreml_yolo_path     = cc.coreml_yolo_path;
         if (!pipeline.load(cfg)) {
             fprintf(stderr, "Failed to load pipeline\n"); return 1;
         }

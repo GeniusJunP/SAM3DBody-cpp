@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
 // Converts an IEEE 754 half-precision float (stored as uint16_t) to a single-precision float.
 static inline float fsb_half_to_float(uint16_t h)
@@ -28,11 +29,27 @@ static inline float fsb_half_to_float(uint16_t h)
 }
 
 #ifdef __cplusplus
-extern "C" {
+namespace fsb {
+
+enum class ComputeUnit {
+    CPUOnly = 0,
+    CPUAndGPU = 1,
+    All = 2,
+    CPUAndNeuralEngine = 3
+};
+
+#if defined(__OBJC__)
+inline std::shared_ptr<void> make_shared_objc(id obj) {
+    if (!obj) return nullptr;
+    void* ptr = (__bridge_retained void*)obj;
+    return std::shared_ptr<void>(ptr, [](void* p) {
+        if (p) {
+            id o = (__bridge_transfer id)p;
+            (void)o;
+        }
+    });
+}
 #endif
 
-void fsb_coreml_release_opaque(void* opaque);
-
-#ifdef __cplusplus
 }
 #endif

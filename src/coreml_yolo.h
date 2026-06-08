@@ -1,25 +1,32 @@
 #pragma once
 
-#include <stdbool.h>
+#include <memory>
+#include <string>
+#include "coreml_utils.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace fsb {
 
-// Opaque context pointer
-typedef void* CoreMLYoloContext;
+class CoreMLYolo {
+public:
+    CoreMLYolo();
+    ~CoreMLYolo();
 
-// Initialize the CoreML model
-CoreMLYoloContext init_coreml_yolo(const char* mlpackage_path);
+    CoreMLYolo(const CoreMLYolo&) = delete;
+    CoreMLYolo& operator=(const CoreMLYolo&) = delete;
 
-// Free the context
-void free_coreml_yolo(CoreMLYoloContext ctx);
+    bool load(const std::string& mlpackage_path, ComputeUnit compute_units = ComputeUnit::All);
 
-// Run inference
-// input_bchw: float array of size 1 * 3 * 640 * 640
-// output: float array of size 1 * 56 * 8400
-bool run_coreml_yolo(CoreMLYoloContext ctx, const float* input_bchw, float* output);
+    // Run inference
+    // input_bchw: float array of size 1 * 3 * 640 * 640
+    // output: float array of size 1 * 56 * 8400
+    bool run(const float* input_bchw, float* output);
 
-#ifdef __cplusplus
-}
-#endif
+    void free();
+    bool loaded() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace fsb
