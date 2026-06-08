@@ -13,8 +13,12 @@ namespace fsb {
 // ─── image normalisation constants (from model_config.yaml) ──────────────────
 static constexpr float IMAGE_MEAN[3]    = {0.485f, 0.456f, 0.406f};
 static constexpr float IMAGE_STD[3]     = {0.229f, 0.224f, 0.225f};
-static constexpr int   CROP_SIZE        = 512;
-static constexpr int   FEAT_HW          = CROP_SIZE / 16;  // 32 – patch grid size
+#ifndef FSB_BACKBONE_SIZE
+#define FSB_BACKBONE_SIZE 512
+#endif
+
+static constexpr int   CROP_SIZE        = FSB_BACKBONE_SIZE;
+static constexpr int   FEAT_HW          = CROP_SIZE / 16;  // patch grid size
 static constexpr int   PATCH_SIZE       = 16;
 // BBoxScale padding factor – matches Python transforms BBoxScale(padding=1.25).
 // The crop is expanded by this factor, and condition_info[2] = (bbox_size*1.25) / focal.

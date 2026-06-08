@@ -101,7 +101,7 @@ static GLuint compile_shader(GLenum type, const char* src) {
     return s;
 }
 
-static GLuint link_program(const char* vs, const char* fs) 
+static GLuint link_program(const char* vs, const char* fs)
 {
     GLuint p = glCreateProgram();
     GLuint v = compile_shader(GL_VERTEX_SHADER,   vs);
@@ -119,13 +119,13 @@ static GLuint link_program(const char* vs, const char* fs)
 
 // ── GPU mesh state ───────────────────────────────────────────────────────────
 
-struct MeshGPU 
+struct MeshGPU
 {
     GLuint vao, vbo_pos, vbo_norm, ebo;
     GLsizei n_indices;
 };
 
-static MeshGPU upload_mesh_once(const struct TRI_Model* m) 
+static MeshGPU upload_mesh_once(const struct TRI_Model* m)
 {
     MeshGPU g{};
     g.n_indices = (GLsizei)m->header.numberOfIndices;
@@ -333,10 +333,10 @@ static bool upload_bg_frame(BgTex& t, const cv::Mat& bgr)
 
 // ── 4x4 matrix multiply (column-major) ──────────────────────────────────────
 
-static void mat4_mul(float dst[16], const float a[16], const float b[16]) 
+static void mat4_mul(float dst[16], const float a[16], const float b[16])
 {
     for (int c = 0; c < 4; ++c)
-        for (int r = 0; r < 4; ++r) 
+        for (int r = 0; r < 4; ++r)
         {
             dst[c*4+r] = 0.f;
             for (int k = 0; k < 4; ++k)
@@ -385,7 +385,7 @@ int mat4_transpose(float * mat)
 }
 // ── Callbacks required by glx3.c ─────────────────────────────────────────────
 
-extern "C" 
+extern "C"
 {
     // Called by glx3_checkEvents() on key/mouse events.
     int handleUserInput(int key, int x, int y) { (void)key; (void)x; (void)y; return 1; }
@@ -395,7 +395,7 @@ extern "C"
 
 // ── YOLO skeleton joint pairs (COCO 17-joint order) ─────────────────────────
 
-static const int COCO_PAIRS[][2] = 
+static const int COCO_PAIRS[][2] =
 {
     {0,1},{0,2},{1,3},{2,4},                          // head
     {5,6},{5,7},{7,9},{6,8},{8,10},                   // arms
@@ -405,7 +405,7 @@ static const int N_COCO_PAIRS = 17;
 
 static void draw_yolo_skeleton(cv::Mat& img,
                                 const std::vector<float>& kps,
-                                float conf_thresh = 0.3f) 
+                                float conf_thresh = 0.3f)
 {
     if ((int)kps.size() < 51) return;
     // Draw limb lines first, then joint dots on top
@@ -700,6 +700,9 @@ int main(int argc, const char** argv) {
         cfg.person_thresh   = cc.person_thresh;   // honour --detector-threshold / per-detector default
         cfg.person_nms_iou  = cc.person_nms_iou;
         cfg.skip_body_model = true;    // LBS runs natively in C; skip body_model.onnx
+        cfg.coreml_backbone_path = cc.coreml_backbone_path;
+        cfg.coreml_decoder_path  = cc.coreml_decoder_path;
+        cfg.coreml_yolo_path     = cc.coreml_yolo_path;
         if (!pipeline.load(cfg)) {
             fprintf(stderr, "Failed to load pipeline\n"); return 1;
         }
@@ -915,7 +918,7 @@ int main(int argc, const char** argv) {
     const int frame_stop   = (max_frames > 0) ? start_frame + max_frames : -1;
 
     cv::Mat frame;
-    while (glx3_checkEvents()) 
+    while (glx3_checkEvents())
     {
         if (is_image)
         {

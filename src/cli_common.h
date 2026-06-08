@@ -83,6 +83,11 @@ struct CommonConfig
     bool        use_trt        = false;
     bool        fp16           = true;    // can be disabled with --no-fp16
 
+    // ── CoreML (macOS only) ──────────────────────────────────────────────────
+    std::string coreml_backbone_path;
+    std::string coreml_decoder_path;
+    std::string coreml_yolo_path;
+
     // ── YOLO person detector tuning ──────────────────────────────────────────
     // The renderer doesn't use these (it inherits whatever the pipeline
     // chose internally) but accepting them keeps the CLI uniform — passing
@@ -137,17 +142,17 @@ inline bool parse_common_arg(int argc, const char* const* argv, int& i,
                              CommonConfig& c)
 {
 #define CLI_STR(flag, field)                                              \
-    if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
-    { c.field = argv[++i]; return true; }
+     if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
+     { c.field = argv[++i]; return true; }
 #define CLI_INT(flag, field)                                              \
-    if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
-    { c.field = std::stoi(argv[++i]); return true; }
+     if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
+     { c.field = std::stoi(argv[++i]); return true; }
 #define CLI_FLT(flag, field)                                              \
-    if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
-    { c.field = std::stof(argv[++i]); return true; }
+     if (std::strcmp(argv[i], flag) == 0 && i + 1 < argc)                  \
+     { c.field = std::stof(argv[++i]); return true; }
 #define CLI_BOOL(flag, field, val)                                        \
-    if (std::strcmp(argv[i], flag) == 0)                                  \
-    { c.field = (val); return true; }
+     if (std::strcmp(argv[i], flag) == 0)                                  \
+     { c.field = (val); return true; }
 
     // Pipeline
     CLI_STR ("--onnx-dir",             onnx_dir)
@@ -174,6 +179,12 @@ inline bool parse_common_arg(int argc, const char* const* argv, int& i,
     if ((std::strcmp(argv[i], "--detector-threshold") == 0 ||
          std::strcmp(argv[i], "--thresh") == 0) && i + 1 < argc)
     { c.person_thresh = std::stof(argv[++i]); c.thresh_set = true; return true; }
+
+    // CoreML
+    CLI_STR ("--coreml-backbone",      coreml_backbone_path)
+    CLI_STR ("--coreml-decoder",       coreml_decoder_path)
+    CLI_STR ("--coreml-yolo",          coreml_yolo_path)
+
     CLI_FLT ("--nms",                  person_nms_iou)
     CLI_INT ("--max-persons",          max_persons)
     CLI_STR ("--detector",             detector)
@@ -409,7 +420,7 @@ inline void resolve_backbone_defaults(CommonConfig& c)
         c.backbone_name = "backbone_fp16.onnx";
         std::fprintf(stderr,
             "[cli] CUDA: found 'backbone_fp16.onnx'; preferring it over backbone.onnx "
-            "(FP16: 3x smaller, ~6%% faster). Pin --backbone backbone.onnx to force the bf16 original.\n");
+            "(FP16: 3x smaller, ~6% faster). Pin --backbone backbone.onnx to force the bf16 original.\n");
     }
 }
 
@@ -427,6 +438,9 @@ inline void apply_common_to_pipeline_cfg(const CommonConfig& c,
     pc.cuda_device    = c.cuda_device;
     pc.use_trt_ep     = c.use_trt;
     pc.use_fp16       = c.fp16;
+    pc.coreml_backbone_path = c.coreml_backbone_path;
+    pc.coreml_decoder_path  = c.coreml_decoder_path;
+    pc.coreml_yolo_path     = c.coreml_yolo_path;
     pc.person_thresh  = c.person_thresh;
     pc.person_nms_iou = c.person_nms_iou;
     pc.max_persons    = c.max_persons;
@@ -464,6 +478,9 @@ inline void print_common_args_help(FILE* fp)
         "  --no-fp16                      Disable FP16\n"
         "  --detector-threshold F         Person confidence threshold (default 0.50; 0.25 for libreyolo,\n"
         "                                 whose tiny model scores people lower).  Alias: --thresh\n"
+        "  --coreml-backbone PATH         CoreML backbone .mlpackage (macOS)\n"
+        "  --coreml-decoder  PATH         CoreML decoder  .mlpackage (macOS)\n"
+        "  --coreml-yolo     PATH         CoreML YOLO     .mlpackage (macOS)\n"
         "  --nms      F                   Detector NMS IoU (default 0.45)\n"
         "  --max-persons N                Cap processing to the top-N most-confident people (0 = unlimited)\n"
         "  --bvh      PATH                Write BVH motion-capture file(s); per-person filenames appended\n"

@@ -487,6 +487,7 @@ int main(int argc, char** argv)
     resolve_detector_defaults(c);           // "auto" → libreyolo when available
     resolve_backbone_defaults(c);           // CUDA: prefer backbone_fp16.onnx if present
     apply_common_to_pipeline_cfg(c, pcfg);  // all shared pipeline fields
+
     pcfg.skip_body_model  = c.skip_body;
     pcfg.zero_face_params = c.zero_face;
     pcfg.focal_x          = c.focal_x;

@@ -1,0 +1,21 @@
+# CoreML Export Environment Requirements
+# Note: coremltools 9.0 has only been fully tested up to Torch 2.7.0.
+# Using Torch 2.12.0 or higher may produce unexpected TracerWarnings.
+
+torch==2.7.0
+torchvision
+coremltools==9.0
+numpy
+opencv-python
+timm
+huggingface_hub
+braceexpand
+einops
+omegaconf
+yacs
+roma
+pyrender
+trimesh
+pytorch_lightning
+termcolor
+ultralytics

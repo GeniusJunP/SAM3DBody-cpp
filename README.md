@@ -1,8 +1,12 @@
+Special thanks to Ammar Qammaz for the original C++ implementation.  
+  
 # SAM3DBody-cpp
 
 Standalone C++ inference engine for **SAM-3D-Body** — zero Python dependency at runtime.
 
 Takes a BGR image and produces per-person MHR body pose parameters, camera translation, and optionally full 3D mesh vertices + 70 body/hand keypoints, all via ONNX Runtime + ggml.
+
+**Apple Silicon Support**: Features a CoreML backend ([coreml_export/README.md](coreml_export/README.md)) for macOS.
 
 Also includes Python frontends that call the compiled shared library via ctypes, and a CSV exporter for the 70 MHR keypoints.
 
@@ -138,6 +142,8 @@ BGR image
       extracted once by tools/extract_lbs_data.py
 ```
 
+> **Apple Silicon (macOS) Acceleration**: On Apple Silicon Macs, YOLO, Backbone, and Decoder can be offloaded to GPU/ANE using native CoreML. See [`coreml_export/README.md`](coreml_export/README.md) for details.
+
 > **Note:** `body_model.onnx` export is blocked on PyTorch ≥ 2.x (torch.export rejects
 > TorchScript modules). The native C LBS path reads `body_model.lbs` directly and
 > produces identical output to Python `mhr_forward` (body model stores data in cm;
@@ -229,6 +235,14 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
+**For macOS (Apple Silicon + CoreML):**
+Use the `Makefile` in the root directory to automatically export ONNX models to CoreML and build the C++ project.
+```bash
+make models  # Export and compile .mlpackage
+make clean
+make        # Build fast_sam_3dbody_run with CoreML support
+```
+
 CMake handles dependencies automatically:
 - **ONNX Runtime 1.20.1** – downloaded from GitHub releases if not found; point to an existing install with `-DONNX_RUNTIME_DIR=/path/to/onnxruntime`
 - **ggml** – fetched via `FetchContent` from GitHub
@@ -264,6 +278,8 @@ Outputs in `build/`:
 
 ### CLI executable
 
+> for CoreML inference, see [coreml_export/README.md](coreml_export/README.md)
+
 ```bash
 cd fast_sam_3dbody_cpp/build
 
@@ -289,6 +305,15 @@ cd fast_sam_3dbody_cpp/build
 
 # CPU-only
 ./fast_sam_3dbody_run ... --cuda -1
+
+# macOS Apple Silicon (CoreML Acceleration)
+./fast_sam_3dbody_run \
+    --onnx-dir ../onnx \
+    --gguf ../onnx/pipeline.gguf \
+    --coreml-backbone ../coreml_export/checkpoints/backbone_coreml.mlmodelc \
+    --coreml-decoder ../coreml_export/checkpoints/decoder_coreml.mlmodelc \
+    --coreml-yolo ../coreml_export/checkpoints/yolo11m-pose.mlmodelc \
+    --from 0
 ```
 
 Full option list:
@@ -297,6 +322,9 @@ Full option list:
 --onnx-dir PATH    Directory with backbone/decoder/body_model ONNX files
 --gguf     PATH    pipeline.gguf (MHR + camera heads)
 --yolo     PATH    YOLO pose model (.onnx)
+--coreml-backbone PATH  Native CoreML backbone .mlpackage or .mlmodelc (macOS)
+--coreml-yolo     PATH  Native CoreML YOLO .mlpackage or .mlmodelc (macOS)
+--coreml-decoder  PATH  Native CoreML decoder .mlpackage or .mlmodelc (macOS)
 --from     SRC     Webcam index (0,1,..) or path to image/video
 -o / --out PATH    Write 70-joint 3D keypoints to CSV per frame
 --bvh      PATH    Write BVH motion capture file(s) to PATH (see "BVH export" below)
@@ -881,17 +909,19 @@ fsb_destroy(h);
 
 ## Performance notes
 
-| Stage | Time (RTX 3090, B=1) |
-|-------|----------------------|
-| YOLO detection | ~5 ms |
-| Backbone (DINOv3-ViT-H) | ~150–200 ms |
-| Decoder (6-layer) | ~20 ms |
-| MHR + camera FFN (CPU) | <1 ms |
-| Native C LBS (optional) | <1 ms |
+| Stage | Time (RTX 3090, B=1) | Time (Apple Silicon CoreML, B=1) | Time (Apple Silicon CoreML, B=4) |
+|-------|----------------------|----------------------------------|----------------------------------|
+| YOLO detection | ~5 ms | ~1.5 ms | ~17 ms |
+| Backbone (DINOv3-ViT-H) | ~150–200 ms | ~370 ms | ~1333 ms (333 ms / sample) |
+| Decoder (6-layer) | ~20 ms | ~180 ms | ~48 ms |
+| MHR + camera FFN (CPU) | <1 ms | ~2 ms | ~12 ms |
+| Native C LBS (optional) | <1 ms | <1 ms | ~4 ms |
 
 - Backbone is the bottleneck; it dominates end-to-end latency.
 - Use `--skip-body` unless 3D vertices are required.
-- For higher throughput, batch multiple crops in a single backbone forward pass (already done when multiple persons are detected).
+- On Apple Silicon, inference defaults to `CPUAndGPU`. The Apple Neural Engine (ANE) is disabled intentionally because its memory bandwidth and tensor limits are not intended for large-scale Vision Transformer Attention workloads.
+- The CoreML backend fully supports batched inference (`B>1`) leveraging `MLBatchProvider` to maximize Metal GPU utilization.
+
 
 ### TensorRT acceleration (`--trt`)
 
@@ -990,4 +1020,3 @@ and of course the Meta AI team behind the awesome paper that proposes the SAM 3D
   year={2026}
 }
 ```
-

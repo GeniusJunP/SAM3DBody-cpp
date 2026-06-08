@@ -81,8 +81,13 @@ struct PipelineConfig {
     std::string decoder_name  = "decoder.onnx";  // filename within onnx_dir; resolver swaps in decoder_fp16.onnx under --trt
     std::string gguf_path;          // Path to pipeline.gguf
     std::string yolo_path;          // YOLO model: .onnx or .engine (TRT)
+    std::string mhr_onnx_path;
+    std::string coreml_backbone_path; // Optional native CoreML backbone .mlpackage on macOS
+    std::string coreml_yolo_path;     // Optional native CoreML YOLO .mlpackage on macOS
+    std::string coreml_decoder_path;  // Optional native CoreML Decoder .mlpackage on macOS
 
     // Device
+    int yolo_input_size = 640;
     int  cuda_device    = 0;        // CUDA device (-1 = CPU only)
     bool use_trt_ep     = false;    // Enable ONNX Runtime TensorRT EP (requires TRT install)
     bool use_fp16       = true;     // FP16 for ONNX EP

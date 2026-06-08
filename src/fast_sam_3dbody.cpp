@@ -13,6 +13,12 @@
 
 #include "fast_sam_3dbody.h"
 #include "preprocess.hpp"
+#include "mhr_joint_table.h"
+#include "outputFiltering.h"
+#include "coreml_backbone.h"
+#include "coreml_yolo.h"
+#include "coreml_decoder.h"
+#include "coreml_utils.h"
 
 // ── ggml headers ─────────────────────────────────────────────────────────────
 #if __has_include(<ggml/ggml.h>)
@@ -365,6 +371,9 @@ struct Pipeline::Impl
     // ONNX Runtime
     Ort::Env        ort_env{ORT_LOGGING_LEVEL_WARNING, "fast_sam_3dbody"};
     OrtSession      sess_yolo, sess_backbone, sess_decoder, sess_body;
+    CoreMLBackbone  coreml_backbone;
+    CoreMLYoloContext    coreml_yolo    = nullptr;
+    CoreMLDecoderContext coreml_decoder = nullptr;
 
     // CPU FFNs for MHR + camera heads (weights loaded from GGUF)
     CFFN mhr_ffn, cam_ffn;
@@ -412,19 +421,34 @@ struct Pipeline::Impl
             return cfg.onnx_dir + "/" + f;
         };
 
+        if (!cfg.coreml_backbone_path.empty()) {
+            printf("[FSB] Loading CoreML backbone … "); fflush(stdout);
+            if (!coreml_backbone.load(cfg.coreml_backbone_path)) return false;
+            printf("OK\n");
+            goto skip_onnx_load_backbone;
+        }
         printf("[FSB] Loading backbone … ");
         fflush(stdout);
         if (!sess_backbone.load(ort_env, opath(cfg.backbone_name.c_str()), cuda, dev,
                                 cfg.use_fp16, cfg.use_trt_ep))
             return false;
         printf("OK\n");
+skip_onnx_load_backbone:;
 
+        if (!cfg.coreml_decoder_path.empty()) {
+            printf("[FSB] Loading CoreML decoder … "); fflush(stdout);
+            coreml_decoder = init_coreml_decoder(cfg.coreml_decoder_path.c_str());
+            if (!coreml_decoder) return false;
+            printf("OK\n");
+            goto skip_onnx_load_decoder;
+        }
         printf("[FSB] Loading decoder  … ");
         fflush(stdout);
         if (!sess_decoder.load(ort_env, opath(cfg.decoder_name.c_str()), cuda, dev,
                                cfg.use_fp16, cfg.use_trt_ep))
             return false;
         printf("OK\n");
+skip_onnx_load_decoder:;
 
         if (!cfg.skip_body_model)
         {
@@ -518,6 +542,13 @@ struct Pipeline::Impl
         }
 
         // YOLO – optional (might not exist for image-only usage)
+        if (!cfg.coreml_yolo_path.empty()) {
+            printf("[FSB] Loading CoreML YOLO … "); fflush(stdout);
+            coreml_yolo = init_coreml_yolo(cfg.coreml_yolo_path.c_str());
+            if (!coreml_yolo) fprintf(stderr, "[FSB] CoreML YOLO load failed – detection disabled\n");
+            else printf("OK\n");
+            goto skip_onnx_load_yolo;
+        }
         if (!cfg.yolo_path.empty())
         {
             printf("[FSB] Loading YOLO … ");
@@ -531,6 +562,7 @@ struct Pipeline::Impl
                 printf("OK\n");
             }
         }
+skip_onnx_load_yolo:;
 
         // ── ggml / GGUF ───────────────────────────────────────────────────────
         printf("[FSB] Loading pipeline.gguf … ");
@@ -616,6 +648,41 @@ struct Pipeline::Impl
         // ── person detection ──────────────────────────────────────────────────
         auto t0 = Clock::now();
         std::vector<PersonDet> dets;
+
+        if (coreml_yolo) {
+            const int YW = 640, YH = 640;
+            float scale = std::min(float(YW) / float(W), float(YH) / float(H));
+            int new_w = (int)std::round(W * scale);
+            int new_h = (int)std::round(H * scale);
+            int pad_x = (YW - new_w) / 2;
+            int pad_y = (YH - new_h) / 2;
+            cv::Mat resized;
+            cv::resize(bgr, resized, {new_w, new_h}, 0, 0, cv::INTER_LINEAR);
+            cv::Mat yolo_in(YH, YW, CV_8UC3, cv::Scalar(114, 114, 114));
+            resized.copyTo(yolo_in(cv::Rect(pad_x, pad_y, new_w, new_h)));
+            cv::Mat yolo_blob = cv::dnn::blobFromImage(yolo_in, 1.0/255.0, cv::Size(), cv::Scalar(), true, false);
+            
+            int nd = 8400;
+            std::vector<float> row_major(nd * 56);
+            if (!run_coreml_yolo(coreml_yolo, yolo_blob.ptr<float>(), row_major.data())) {
+                fprintf(stderr, "[FSB] CoreML YOLO inference failed\n");
+            } else {
+                dets = parse_yolo_output(row_major.data(), nd, cfg.person_thresh, cfg.person_nms_iou);
+                for (auto& d : dets) {
+                    d.x1 = (d.x1 - pad_x) / scale;
+                    d.x2 = (d.x2 - pad_x) / scale;
+                    d.y1 = (d.y1 - pad_y) / scale;
+                    d.y2 = (d.y2 - pad_y) / scale;
+                    if (d.has_kps) {
+                        for (int k = 0; k < 17; ++k) {
+                            d.kps[k*3+0] = (d.kps[k*3+0] - pad_x) / scale;
+                            d.kps[k*3+1] = (d.kps[k*3+1] - pad_y) / scale;
+                        }
+                    }
+                }
+            }
+            goto skip_onnx_yolo;
+        }
 
         if (sess_yolo.session)
         {
@@ -724,6 +791,7 @@ struct Pipeline::Impl
                 fprintf(stderr, "[FSB] YOLO inference error: %s\n", e.what());
             }
         }
+skip_onnx_yolo:;
 
         // Fallback: full image as single detection
         if (dets.empty())
@@ -778,8 +846,17 @@ struct Pipeline::Impl
         const int BACKBONE_DIM = 1280;
         const size_t feat_elems = (size_t)B * BACKBONE_DIM * FEAT_HW * FEAT_HW;
 
-        std::vector<int64_t> img_shape{B, 3, CROP_SIZE, CROP_SIZE};
         Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+        std::vector<float> features(feat_elems);
+        std::vector<void*> opaque_features(B, nullptr);
+        if (coreml_backbone.loaded()) {
+            if (!coreml_backbone.run(batch_crops.data(), B, features.data(), opaque_features.data())) return {};
+            goto skip_onnx_backbone;
+        }
+
+        {
+        std::vector<int64_t> img_shape{B, 3, CROP_SIZE, CROP_SIZE};
 
         Ort::Value img_t = Ort::Value::CreateTensor<float>(
                                mi, batch_crops.data(), batch_crops.size(), img_shape.data(), 4);
@@ -787,8 +864,9 @@ struct Pipeline::Impl
                                 Ort::RunOptions{nullptr},
                                 sess_backbone.input_names.data(),  &img_t,  1,
                                 sess_backbone.output_names.data(), 1);
-        const float* feat_ptr = backbone_out[0].GetTensorData<float>();
-        std::vector<float> features(feat_ptr, feat_ptr + feat_elems);
+        std::copy(feat_ptr, feat_ptr + feat_elems, features.begin());
+        }
+skip_onnx_backbone:;
         double dt_bb = ms(t0);
         timers.backbone += dt_bb;
         printf("[FSB] backbone:   %.1f ms\n", dt_bb);
@@ -802,6 +880,22 @@ struct Pipeline::Impl
         std::vector<int64_t> cond_shape{B, 3};
         std::vector<int64_t> ray_shape {B, 2, FEAT_HW, FEAT_HW};
 
+        std::vector<float> pose_tokens(token_elems);
+        if (coreml_decoder) {
+            for (int i = 0; i < B; ++i) {
+                if (!run_coreml_decoder(coreml_decoder,
+                                        features.data() + i * BACKBONE_DIM * FEAT_HW * FEAT_HW,
+                                        batch_cond.data() + i * 3,
+                                        batch_ray.data() + i * 2 * FEAT_HW * FEAT_HW,
+                                        pose_tokens.data() + i * DECODER_DIM,
+                                        opaque_features[i])) {
+                    fprintf(stderr, "[FSB] CoreML Decoder inference failed for person %d\n", i);
+                }
+            }
+            goto skip_onnx_decoder;
+        }
+
+        {
         Ort::Value feat_t = Ort::Value::CreateTensor<float>(
                                 mi, features.data(), features.size(), feat_shape.data(), 4);
         Ort::Value cond_t = Ort::Value::CreateTensor<float>(
@@ -821,8 +915,16 @@ struct Pipeline::Impl
                                Ort::RunOptions{nullptr},
                                dec_in_names.data(),  dec_inputs.data(),  dec_inputs.size(),
                                dec_out_names.data(), 1);
-        const float* token_ptr = decoder_out[0].GetTensorData<float>();
-        std::vector<float> pose_tokens(token_ptr, token_ptr + token_elems);
+        std::copy(token_ptr, token_ptr + token_elems, pose_tokens.begin());
+        }
+skip_onnx_decoder:;
+
+        // Clean up CoreML opaque pointers
+        for (int i = 0; i < B; ++i) {
+            if (opaque_features[i]) {
+                fsb_coreml_release_opaque(opaque_features[i]);
+            }
+        }
         double dt_dec = ms(t0);
         timers.decoder += dt_dec;
         printf("[FSB] decoder:    %.1f ms\n", dt_dec);
@@ -1218,6 +1320,9 @@ struct Pipeline::Impl
         mhr_ffn = CFFN{};
         cam_ffn = CFFN{};
         sess_backbone.free();
+        coreml_backbone.free();
+        if (coreml_decoder) { free_coreml_decoder(coreml_decoder); coreml_decoder = nullptr; }
+        if (coreml_yolo) { free_coreml_yolo(coreml_yolo); coreml_yolo = nullptr; }
         sess_decoder.free();
         sess_body.free();
         sess_yolo.free();
